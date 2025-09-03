@@ -28,6 +28,7 @@ type Thread = {
   userId?: string | null
   authorName?: string
   createdAt?: any
+  createdAtMs?: number
   createdAtText?: string
   messageCount?: number
   viewCount?: number
@@ -42,7 +43,7 @@ export default function ThreadsPage() {
   const router = useRouter()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [genre, setGenre] = useState('')
+  const [genre, setGenre] = useState('雑談')
   const [threads, setThreads] = useState<Thread[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
@@ -50,10 +51,55 @@ export default function ThreadsPage() {
   const pendingRef = useRef<Set<string>>(new Set())
   const [authorNameMap, setAuthorNameMap] = useState<Record<string, string>>({})
 
+  // 表示モード: トレンド / 新着 / 作成順 / ジャンル別人気
+  const [mode, setMode] = useState<'trend' | 'new' | 'created' | 'genre:雑談' | 'genre:恋愛' | 'genre:ゲーム' | 'genre:１８禁'>('trend')
+
+  // 各スレッドのライブ件数（views/messages）を保持
+  const [liveCounts, setLiveCounts] = useState<Record<string, { views: number; messages: number }>>({})
+  const countsUnsubsRef = useRef<Record<string, { views?: () => void; messages?: () => void }>>({})
+
   const disabled = useMemo(
     () => !name.trim() || name.length > NAME_MAX || description.length > DESC_MAX,
     [name, description]
   )
+
+  const displayThreads = useMemo(() => {
+    const getScore = (t: Thread) => {
+      const lc = liveCounts[t.id]
+      const views = lc?.views ?? (t.viewCount ?? 0)
+      const msgs = lc?.messages ?? (t.messageCount ?? 0)
+      return views * 10 + msgs
+    }
+    let arr = [...threads]
+    if (mode === 'trend') {
+      arr.sort((a, b) => {
+        const s = getScore(b) - getScore(a)
+        if (s !== 0) return s
+        return (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)
+      })
+      return arr
+    }
+    if (mode === 'new') {
+      arr.sort((a, b) => (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0))
+      return arr
+    }
+    if (mode === 'created') {
+      arr.sort((a, b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0))
+      return arr
+    }
+    // genre:*
+    if (mode.startsWith('genre:')) {
+      const g = mode.split(':')[1]
+      arr = arr.filter((t) => (t.genre || '') === g)
+      arr.sort((a, b) => {
+        const s = getScore(b) - getScore(a)
+        if (s !== 0) return s
+        return (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)
+      })
+      return arr
+    }
+    return arr
+  }, [threads, liveCounts, mode])
 
   // 一覧: 最新50件のみ購読（高速・省コスト）
   useEffect(() => {
@@ -78,9 +124,52 @@ export default function ThreadsPage() {
           createdAtText: t
             ? t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
             : '',
+          createdAtMs: t ? t.getTime() : 0,
         }
       })
       setThreads(list)
+
+      // --- 各スレッドの views / messages サブコレクションを購読して件数を反映 ---
+      const currentIds = new Set(list.map((t) => t.id))
+
+      // 不要になった購読を解除
+      for (const id of Object.keys(countsUnsubsRef.current)) {
+        if (!currentIds.has(id)) {
+          try { countsUnsubsRef.current[id].views && countsUnsubsRef.current[id].views!() } catch {}
+          try { countsUnsubsRef.current[id].messages && countsUnsubsRef.current[id].messages!() } catch {}
+          delete countsUnsubsRef.current[id]
+          setLiveCounts((prev) => {
+            const cp = { ...prev }
+            delete cp[id]
+            return cp
+          })
+        }
+      }
+
+      // 新規スレッドに購読を張る
+      for (const t of list) {
+        if (!countsUnsubsRef.current[t.id]) {
+          const unsubViews = onSnapshot(
+            collection(db, 'threads', t.id, 'views'),
+            (snap) => {
+              setLiveCounts((prev) => ({
+                ...prev,
+                [t.id]: { views: snap.size || 0, messages: prev[t.id]?.messages ?? 0 },
+              }))
+            }
+          )
+          const unsubMsgs = onSnapshot(
+            collection(db, 'threads', t.id, 'messages'),
+            (snap) => {
+              setLiveCounts((prev) => ({
+                ...prev,
+                [t.id]: { views: prev[t.id]?.views ?? (t.viewCount ?? 0), messages: snap.size || 0 },
+              }))
+            }
+          )
+          countsUnsubsRef.current[t.id] = { views: unsubViews, messages: unsubMsgs }
+        }
+      }
 
       // authorName が無いものは users/{uid} から一度だけ引いて補完 + サーバーへ書き戻し
       for (const t of list) {
@@ -116,7 +205,15 @@ export default function ThreadsPage() {
           })
       }
     })
-    return () => unsub()
+    return () => {
+      unsub()
+      // サブコレ購読も全解除
+      for (const id of Object.keys(countsUnsubsRef.current)) {
+        try { countsUnsubsRef.current[id].views && countsUnsubsRef.current[id].views!() } catch {}
+        try { countsUnsubsRef.current[id].messages && countsUnsubsRef.current[id].messages!() } catch {}
+      }
+      countsUnsubsRef.current = {}
+    }
   }, [authorNameMap])
 
   // 作成
@@ -139,7 +236,7 @@ export default function ThreadsPage() {
       const ref = await addDoc(collection(db, 'threads'), {
         name: name.trim().slice(0, NAME_MAX),
         description: description.trim().slice(0, DESC_MAX),
-        genre: genre.trim(),
+        genre: (genre.trim() || '雑談'),
         userId: user?.uid ?? null,
         authorName,
         createdAt: serverTimestamp(),
@@ -175,22 +272,41 @@ export default function ThreadsPage() {
 
       {/* カテゴリチップ（装飾） */}
       <div className="px-4 pt-3 pb-1 flex gap-3 overflow-x-auto">
-        <button className="shrink-0 rounded-full border border-neutral-300 bg-neutral-100 px-3 py-1.5 text-sm hover:border-pink-400">🔥 トレンド</button>
-        <button className="shrink-0 rounded-full border border-neutral-300 bg-neutral-100 px-3 py-1.5 text-sm hover:border-pink-400">💭 雑談</button>
-        <button className="shrink-0 rounded-full border border-neutral-300 bg-neutral-100 px-3 py-1.5 text-sm hover:border-pink-400">💕 恋愛</button>
-        <button className="shrink-0 rounded-full border border-neutral-300 bg-neutral-100 px-3 py-1.5 text-sm hover:border-pink-400">🎮 ゲーム</button>
-        <button className="shrink-0 rounded-full border border-neutral-300 bg-neutral-100 px-3 py-1.5 text-sm hover:border-pink-400">📚 学習</button>
+        {(() => {
+          const chip = (label: string, isActive: boolean, onClick: () => void) => (
+            <button
+              type="button"
+              onClick={onClick}
+              className={`shrink-0 rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                isActive ? 'border-pink-500 bg-pink-100' : 'border-neutral-300 bg-neutral-100 hover:border-pink-400'
+              }`}
+            >
+              {label}
+            </button>
+          )
+          return (
+            <>
+              {chip('🔥 トレンド', mode === 'trend', () => setMode('trend'))}
+              {chip('🆕 新着', mode === 'new', () => setMode('new'))}
+              {chip('📅 作成順', mode === 'created', () => setMode('created'))}
+              {chip('💭 雑談', mode === 'genre:雑談', () => setMode('genre:雑談'))}
+              {chip('💕 恋愛', mode === 'genre:恋愛', () => setMode('genre:恋愛'))}
+              {chip('🎮 ゲーム', mode === 'genre:ゲーム', () => setMode('genre:ゲーム'))}
+              {chip('🔞 １８禁', mode === 'genre:１８禁', () => setMode('genre:１８禁'))}
+            </>
+          )
+        })()}
       </div>
 
       {/* 一覧（1枚内に表示） */}
       <div className="px-2">
-        {threads.length === 0 ? (
+        {displayThreads.length === 0 ? (
           <div className="text-center text-neutral-500 py-10">
             スレッドはまだありません
           </div>
         ) : (
           <ul className="space-y-3">
-            {threads.map((t) => (
+            {displayThreads.map((t, idx) => (
               <li key={t.id} className="relative overflow-hidden rounded-xl border border-neutral-200 bg-neutral-100 p-4 transition-all hover:-translate-y-0.5 hover:border-pink-300">
                 <div className="absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-pink-500 to-rose-500" />
                 <Link href={`/threads/${t.id}`} aria-label={`スレッド ${t.name} を開く`} className="block">
@@ -199,7 +315,26 @@ export default function ThreadsPage() {
                       <div className="text-xs text-neutral-500 mb-1">
                         {(t.authorName || '未設定')}・{t.genre || '未分類'}
                       </div>
-                      <h2 className="font-semibold truncate">{t.name}</h2>
+                      <h2 className="font-semibold truncate flex items-center gap-2">
+                        {(mode === 'trend' || mode.startsWith('genre:')) && (
+                          <>
+                            {idx < 3 && (
+                              <span className="inline-flex h-5 w-5 items-center justify-center" aria-hidden>
+                                <svg
+                                  viewBox="0 0 24 24"
+                                  className={`h-4 w-4 ${idx === 0 ? 'text-yellow-400' : idx === 1 ? 'text-gray-400' : 'text-amber-700'}`}
+                                  fill="currentColor"
+                                >
+                                  <path d="M4 19h16v2H4z"/>
+                                  <path d="M3 7l4.5 3.5L10.5 5l3 5.5L20 7l-2 10H5L3 7z"/>
+                                </svg>
+                              </span>
+                            )}
+                            <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-pink-600 px-1 text-[11px] font-bold text-white">#{idx + 1}</span>
+                          </>
+                        )}
+                        <span className="truncate">{t.name}</span>
+                      </h2>
                       {t.description && (
                         <p className="text-sm text-neutral-600 line-clamp-2 mt-1">
                           {t.description}
@@ -207,8 +342,8 @@ export default function ThreadsPage() {
                       )}
                       <div className="mt-2 flex items-center gap-3 text-xs text-neutral-500">
                         {t.createdAtText && <span>{t.createdAtText}</span>}
-                        <span>👁 {t.viewCount ?? 0}人 見た</span>
-                        <span>💬 {t.messageCount ?? 0}件</span>
+                        <span>👁 {liveCounts[t.id]?.views ?? (t.viewCount ?? 0)}人 見た</span>
+                        <span>💬 {liveCounts[t.id]?.messages ?? (t.messageCount ?? 0)}件</span>
                       </div>
                     </div>
                     <span className="shrink-0 text-lg text-neutral-400">›</span>
@@ -276,9 +411,9 @@ export default function ThreadsPage() {
                 className="w-full rounded-xl border-2 border-neutral-200 bg-neutral-100 px-4 py-3 focus:border-pink-500 focus:outline-none"
               >
                 <option value="雑談">雑談</option>
-                <option value="れんあい">れんあい</option>
+                <option value="恋愛">恋愛</option>
                 <option value="ゲーム">ゲーム</option>
-                <option value="学習">学習</option>
+                <option value="１８禁">１８禁</option>
               </select>
             </div>
             <div className="mt-5 flex gap-2">

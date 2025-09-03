@@ -1,12 +1,111 @@
 // app/page.tsx
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import FooterNav from '@/components/FooterNav'
+import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore'
+import { db } from '@/lib/firebase'
+
+type TrendThread = {
+  id: string
+  name: string
+  description?: string
+  genre?: string
+  authorName?: string
+  createdAtText?: string
+  createdAtMs?: number
+  viewCount?: number
+  messageCount?: number
+}
 
 export default function HomePage() {
   const [showAddPopup, setShowAddPopup] = useState(false)
+
+  // トレンディング（最新50件の中から views*10 + messages の上位3件）
+  const [trendThreads, setTrendThreads] = useState<TrendThread[]>([])
+  const [trendLiveCounts, setTrendLiveCounts] = useState<Record<string, { views: number; messages: number }>>({})
+  const trendUnsubsRef = useRef<Record<string, { views?: () => void; messages?: () => void }>>({})
+
+  useEffect(() => {
+    const q = query(collection(db, 'threads'), orderBy('createdAt', 'desc'), limit(50))
+    const unsub = onSnapshot(q, (snap) => {
+      const list: TrendThread[] = snap.docs.map((d) => {
+        const data: any = d.data()
+        const t: Date | undefined = data?.createdAt?.toDate?.()
+        return {
+          id: d.id,
+          name: data?.name ?? '(無題)',
+          description: data?.description ?? '',
+          genre: data?.genre ?? '',
+          authorName: data?.authorName ?? '',
+          createdAtText: t
+            ? t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : '',
+          createdAtMs: t ? t.getTime() : 0,
+          messageCount: typeof data?.messageCount === 'number' ? data.messageCount : 0,
+          viewCount: typeof data?.viewCount === 'number' ? data.viewCount : 0,
+        }
+      })
+      setTrendThreads(list)
+
+      // サブコレ購読（views/messages）
+      const currentIds = new Set(list.map((t) => t.id))
+      for (const id of Object.keys(trendUnsubsRef.current)) {
+        if (!currentIds.has(id)) {
+          try { trendUnsubsRef.current[id].views && trendUnsubsRef.current[id].views!() } catch {}
+          try { trendUnsubsRef.current[id].messages && trendUnsubsRef.current[id].messages!() } catch {}
+          delete trendUnsubsRef.current[id]
+          setTrendLiveCounts((prev) => {
+            const cp = { ...prev }
+            delete cp[id]
+            return cp
+          })
+        }
+      }
+      for (const t of list) {
+        if (!trendUnsubsRef.current[t.id]) {
+          const unsubViews = onSnapshot(collection(db, 'threads', t.id, 'views'), (vsnap) => {
+            setTrendLiveCounts((prev) => ({
+              ...prev,
+              [t.id]: { views: vsnap.size || 0, messages: prev[t.id]?.messages ?? 0 },
+            }))
+          })
+          const unsubMsgs = onSnapshot(collection(db, 'threads', t.id, 'messages'), (msnap) => {
+            setTrendLiveCounts((prev) => ({
+              ...prev,
+              [t.id]: { views: prev[t.id]?.views ?? (t.viewCount ?? 0), messages: msnap.size || 0 },
+            }))
+          })
+          trendUnsubsRef.current[t.id] = { views: unsubViews, messages: unsubMsgs }
+        }
+      }
+    })
+    return () => {
+      unsub()
+      for (const id of Object.keys(trendUnsubsRef.current)) {
+        try { trendUnsubsRef.current[id].views && trendUnsubsRef.current[id].views!() } catch {}
+        try { trendUnsubsRef.current[id].messages && trendUnsubsRef.current[id].messages!() } catch {}
+      }
+      trendUnsubsRef.current = {}
+    }
+  }, [])
+
+  const trendTop3 = useMemo(() => {
+    const getScore = (t: TrendThread) => {
+      const lc = trendLiveCounts[t.id]
+      const views = lc?.views ?? (t.viewCount ?? 0)
+      const msgs = lc?.messages ?? (t.messageCount ?? 0)
+      return views * 10 + msgs
+    }
+    const arr = [...trendThreads]
+    arr.sort((a, b) => {
+      const s = getScore(b) - getScore(a)
+      if (s !== 0) return s
+      return (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)
+    })
+    return arr.slice(0, 3)
+  }, [trendThreads, trendLiveCounts])
 
   return (
     <div className="mx-auto min-h-screen max-w-xl border-x border-neutral-200 bg-white">
@@ -59,26 +158,47 @@ export default function HomePage() {
         <section>
           <h2 className="mb-4 text-lg font-bold">🔥 トレンディング</h2>
 
-          <div className="grid grid-cols-1 gap-4">
-            <TrendingCard
-              title="深夜の本音トーク 💭"
-              content="眠れない夜に本音で語り合いませんか？今日あった出来事、悩み、なんでもOK"
-              metaLeft="@midnight_user"
-              metaRight="🔥 234 • 💬 89 • 2分前"
-            />
-            <TrendingCard
-              title="Z世代の恋愛観について 💕"
-              content="最近の恋愛って昔とどう違うんだろう？リアルな声を聞かせて"
-              metaLeft="@love_philosopher"
-              metaRight="🔥 156 • 💬 67 • 12分前"
-            />
-            <TrendingCard
-              title="今週のおすすめアニメ 🎬"
-              content="今期のアニメで面白いのある？ネタバレなしでお願いします！"
-              metaLeft="@anime_lover"
-              metaRight="🔥 92 • 💬 45 • 25分前"
-            />
-          </div>
+          {trendTop3.length === 0 ? (
+            <div className="text-neutral-500 text-sm">まだありません</div>
+          ) : (
+            <ul className="space-y-3">
+              {trendTop3.map((t, idx) => (
+                <li key={t.id} className="relative overflow-hidden rounded-2xl border border-neutral-200 bg-neutral-50 p-4 transition hover:-translate-y-0.5 hover:border-pink-300">
+                  <span className="pointer-events-none absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-pink-500 to-rose-400" />
+                  <Link href={`/threads/${t.id}`} className="block" aria-label={`スレッド ${t.name} を開く`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs text-neutral-500 mb-1">{(t.authorName || '未設定')}・{t.genre || '未分類'}</div>
+                        <h3 className="font-semibold truncate flex items-center gap-2">
+                          <>
+                            {idx < 3 && (
+                              <span className="inline-flex h-5 w-5 items-center justify-center" aria-hidden>
+                                <svg viewBox="0 0 24 24" className={`h-4 w-4 ${idx === 0 ? 'text-yellow-400' : idx === 1 ? 'text-gray-400' : 'text-amber-700'}`} fill="currentColor">
+                                  <path d="M4 19h16v2H4z"/>
+                                  <path d="M3 7l4.5 3.5L10.5 5l3 5.5L20 7l-2 10H5L3 7z"/>
+                                </svg>
+                              </span>
+                            )}
+                            <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-pink-600 px-1 text-[11px] font-bold text-white">#{idx + 1}</span>
+                          </>
+                          <span className="truncate">{t.name}</span>
+                        </h3>
+                        {t.description && (
+                          <p className="text-sm text-neutral-600 line-clamp-2 mt-1">{t.description}</p>
+                        )}
+                        <div className="mt-2 flex items-center gap-3 text-xs text-neutral-500">
+                          {t.createdAtText && <span>{t.createdAtText}</span>}
+                          <span>👁 {trendLiveCounts[t.id]?.views ?? (t.viewCount ?? 0)}人 見た</span>
+                          <span>💬 {trendLiveCounts[t.id]?.messages ?? (t.messageCount ?? 0)}件</span>
+                        </div>
+                      </div>
+                      <span className="shrink-0 text-lg text-neutral-400">›</span>
+                    </div>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       </main>
 
@@ -118,35 +238,5 @@ export default function HomePage() {
         </div>
       )}
     </div>
-  )
-}
-
-// --- UI Parts ---
-function TrendingCard({
-  title,
-  content,
-  metaLeft,
-  metaRight,
-}: {
-  title: string
-  content: string
-  metaLeft: string
-  metaRight: string
-}) {
-  return (
-    <Link
-      href="#"
-      className="group relative block overflow-hidden rounded-2xl border border-neutral-200 bg-neutral-50 p-4 transition hover:-translate-y-0.5 hover:border-pink-300"
-    >
-      {/* アクセントライン */}
-      <span className="pointer-events-none absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-pink-500 to-rose-400" />
-
-      <h3 className="mb-2 text-lg font-semibold">{title}</h3>
-      <p className="mb-3 line-clamp-3 text-sm text-neutral-600">{content}</p>
-      <div className="flex items-center justify-between text-xs text-neutral-500">
-        <span>{metaLeft}</span>
-        <span>{metaRight}</span>
-      </div>
-    </Link>
   )
 }

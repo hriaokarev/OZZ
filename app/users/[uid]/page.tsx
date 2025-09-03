@@ -17,6 +17,7 @@ import {
   setDoc,
   where,
   addDoc,
+  onSnapshot,
 } from 'firebase/firestore'
 
 type UserDoc = {
@@ -32,13 +33,21 @@ type Thread = {
   name: string
   createdAtText?: string
 }
+type SearchPost = {
+  id: string
+  content?: string
+  createdAtText?: string
+  likeCount?: number
+}
 
 export default function UserProfilePage() {
   const { uid } = useParams() as { uid: string }
   const router = useRouter()
   const [user, setUser] = useState<UserDoc | null>(null)
   const [threads, setThreads] = useState<Thread[]>([])
+  const [sposts, setSposts] = useState<SearchPost[]>([])
   const [loading, setLoading] = useState(true)
+  const [likeTotal, setLikeTotal] = useState(0)
   const me = auth.currentUser?.uid ?? null
 
   useEffect(() => {
@@ -71,6 +80,30 @@ export default function UserProfilePage() {
             }
           })
         )
+
+        // そのユーザーの SearchPosts（最近の投稿）
+        const pq = query(
+          collection(db, 'searchPosts'),
+          where('userId', '==', uid),
+          orderBy('createdAt', 'desc'),
+          limit(10)
+        )
+        const psnap = await getDocs(pq)
+        if (!alive) return
+        setSposts(
+          psnap.docs.map((d) => {
+            const data: any = d.data()
+            const t: Date | undefined = data?.createdAt?.toDate?.()
+            return {
+              id: d.id,
+              content: data?.content ?? '',
+              likeCount: typeof data?.likeCount === 'number' ? data.likeCount : 0,
+              createdAtText: t
+                ? t.toLocaleDateString() + ' ' + t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : '',
+            }
+          })
+        )
       } finally {
         if (alive) setLoading(false)
       }
@@ -78,6 +111,27 @@ export default function UserProfilePage() {
     return () => {
       alive = false
     }
+  }, [uid])
+
+  useEffect(() => {
+    // このユーザーの投稿（searchPosts）に付いたいいね総数を購読
+    const q = query(collection(db, 'searchPosts'), where('userId', '==', uid))
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        let sum = 0
+        snap.forEach((d) => {
+          const data: any = d.data()
+          const lc = typeof data?.likeCount === 'number' ? data.likeCount : 0
+          sum += lc
+        })
+        setLikeTotal(sum)
+      },
+      (err) => {
+        console.warn('likes snapshot failed', err)
+      }
+    )
+    return () => unsub()
   }, [uid])
 
   async function openOrCreateDM() {
@@ -168,11 +222,11 @@ export default function UserProfilePage() {
         {/* stats */}
         <div className="grid grid-cols-3 gap-5 py-6 border-y border-neutral-200 my-6">
           <div className="text-center">
-            <div className="text-[24px] font-extrabold text-pink-600">{threads.length}</div>
+            <div className="text-[24px] font-extrabold text-pink-600">{threads.length + sposts.length}</div>
             <div className="text-[13px] text-neutral-500 font-medium">投稿</div>
           </div>
           <div className="text-center">
-            <div className="text-[24px] font-extrabold text-pink-600">0</div>
+            <div className="text-[24px] font-extrabold text-pink-600">{likeTotal}</div>
             <div className="text-[13px] text-neutral-500 font-medium">いいね</div>
           </div>
           <div className="text-center">
@@ -210,6 +264,26 @@ export default function UserProfilePage() {
                     <span className="truncate font-semibold">{t.name}</span>
                     <span className="shrink-0 text-xs text-neutral-500">{t.createdAtText}</span>
                   </div>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* 最近の投稿（SearchPosts） */}
+        <h3 className="mb-3 mt-8 font-bold">最近の投稿</h3>
+        {sposts.length === 0 ? (
+          <div className="text-neutral-500 text-sm">まだありません</div>
+        ) : (
+          <ul className="space-y-3">
+            {sposts.map((p) => (
+              <li key={p.id}>
+                <Link href="/post" className="block rounded-2xl border border-neutral-200 bg-neutral-100 p-4 hover:bg-neutral-200 transition relative before:content-[''] before:absolute before:top-0 before:left-0 before:right-0 before:h-[3px] before:bg-gradient-to-r before:from-pink-500 before:to-rose-400">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="truncate font-semibold">{p.content || '(テキストなし)'}</span>
+                    <span className="shrink-0 text-xs text-neutral-500">{p.createdAtText}</span>
+                  </div>
+                  <div className="mt-2 text-xs text-neutral-500">♥ {p.likeCount ?? 0}</div>
                 </Link>
               </li>
             ))}

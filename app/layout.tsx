@@ -3,7 +3,7 @@ import './globals.css'
 import SWRegister from '@/app/sw-register' 
 
 export const metadata = {
-  title: 'Kuro-do',
+  title: 'OZZ',
   description: 'Threads / Search / Settings',
 }
 

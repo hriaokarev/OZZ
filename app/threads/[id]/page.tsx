@@ -29,6 +29,11 @@ type Message = {
   createdAtText?: string
 }
 
+function clipText(s?: string, max = 40) {
+  if (!s) return ''
+  return s.length > max ? s.slice(0, max) + '…' : s
+}
+
 export default function ThreadRoomPage() {
   const { id } = useParams<{ id: string }>()
   const threadId = id
@@ -40,11 +45,14 @@ export default function ThreadRoomPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [showDetail, setShowDetail] = useState(false)
   const sendingRef = useRef(false)
 
   const messagesBoxRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const lastMsgIdRef = useRef<string | null>(null)
+
+  const headerDesc = clipText(description, 20)
 
   const isNearBottom = (el: HTMLDivElement | null, threshold = 80) => {
     if (!el) return true
@@ -177,13 +185,23 @@ export default function ThreadRoomPage() {
           <div className="flex min-w-0 flex-col items-center text-center">
             <h1 className="truncate text-[18px] font-semibold">{title}</h1>
             {description && (
-              <p className="mt-0.5 truncate text-[13px] text-neutral-500">{description}</p>
+              <p className="mt-0.5 truncate text-[13px] text-neutral-500">{headerDesc}</p>
             )}
             {genre && (
               <p className="truncate text-[13px] text-neutral-500">#{genre}</p>
             )}
           </div>
-          <button className="text-neutral-400 text-[20px]" aria-label="メニュー">⋮</button>
+          <button
+            type="button"
+            onClick={() => setShowDetail(true)}
+            className="text-neutral-400 text-[20px]"
+            aria-haspopup="dialog"
+            aria-expanded={showDetail ? 'true' : 'false'}
+            aria-controls="thread-detail-dialog"
+            aria-label="詳細を開く"
+          >
+            ⋮
+          </button>
         </div>
       </div>
 
@@ -258,6 +276,49 @@ export default function ThreadRoomPage() {
           </button>
         </div>
       </div>
+
+      {showDetail && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          id="thread-detail-dialog"
+          className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center"
+        >
+          {/* backdrop */}
+          <button
+            className="absolute inset-0 bg-black/40"
+            aria-label="閉じる"
+            onClick={() => setShowDetail(false)}
+          />
+
+          {/* sheet/card */}
+          <div className="relative w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl bg-white shadow-xl p-5">
+            <div className="flex items-start justify-between gap-3">
+              <h2 className="text-base font-bold">{title}</h2>
+              <button
+                type="button"
+                onClick={() => setShowDetail(false)}
+                className="text-neutral-500 text-xl"
+                aria-label="閉じる"
+              >
+                ×
+              </button>
+            </div>
+
+            {description ? (
+              <p className="mt-3 whitespace-pre-wrap text-[14px] text-neutral-700">{description}</p>
+            ) : (
+              <p className="mt-3 text-[14px] text-neutral-500">説明はありません。</p>
+            )}
+
+            {genre && (
+              <p className="mt-3 text-[13px] text-neutral-500">
+                ジャンル: <span className="font-medium text-neutral-700">#{genre}</span>
+              </p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

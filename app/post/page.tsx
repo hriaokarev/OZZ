@@ -19,7 +19,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { addDoc, collection, serverTimestamp } from 'firebase/firestore'
+import { addDoc, collection, serverTimestamp, doc, onSnapshot, runTransaction, getCountFromServer, query } from 'firebase/firestore'
 
 // ---- Simple runtime cache for posts (survives within SPA session)
 type PostsCache = { items: SearchPost[]; ts: number };
@@ -32,6 +32,12 @@ function setPostsCache(items: SearchPost[]) {
   const c = getPostsCache();
   c.items = items;
   c.ts = Date.now();
+}
+
+function shortUid(uid?: string, head = 6, tail = 4) {
+  if (!uid) return ''
+  if (uid.length <= head + tail + 1) return uid
+  return `${uid.slice(0, head)}…${uid.slice(-tail)}`
 }
 
 export default function SearchPage() {
@@ -151,6 +157,122 @@ export default function SearchPage() {
     }
   }
 
+  function LikeButton({ postId, userId }: { postId: string; userId: string | null }) {
+    const [liked, setLiked] = useState(false)
+    const [count, setCount] = useState(0)
+    const [busy, setBusy] = useState(false)
+    const [pulse, setPulse] = useState(false)
+    const [burst, setBurst] = useState(false)
+    const pulseTimer = useRef<number | null>(null)
+    const burstTimer = useRef<number | null>(null)
+    useEffect(() => {
+      return () => {
+        if (pulseTimer.current) window.clearTimeout(pulseTimer.current)
+        if (burstTimer.current) window.clearTimeout(burstTimer.current)
+      }
+    }, [])
+
+    useEffect(() => {
+      // listen my like doc (existence = liked)
+      let unsubMy: (() => void) | undefined
+      if (userId) {
+        const myLikeRef = doc(db, 'searchPosts', postId, 'likes', userId)
+        unsubMy = onSnapshot(myLikeRef, (snap) => setLiked(snap.exists()))
+      } else {
+        setLiked(false)
+      }
+
+      // listen likeCount field on post (if present)
+      const postRef = doc(db, 'searchPosts', postId)
+      const unsubPost = onSnapshot(postRef, (snap) => {
+        const lc = (snap.data() as any)?.likeCount
+        if (typeof lc === 'number') setCount(lc)
+      })
+
+      // fallback: compute count once from likes subcollection if likeCount is missing
+      ;(async () => {
+        try {
+          const agg = await getCountFromServer(query(collection(db, 'searchPosts', postId, 'likes')))
+          setCount(agg.data().count)
+        } catch {}
+      })()
+
+      return () => {
+        unsubMy && unsubMy()
+        unsubPost()
+      }
+    }, [postId, userId])
+
+    const toggle = async () => {
+      if (!userId) {
+        alert('いいねにはログインが必要です。')
+        return
+      }
+      if (busy) return
+      setBusy(true)
+
+      // Optimistic UI + animation
+      const nextLiked = !liked
+      setLiked(nextLiked)
+      setCount((c) => Math.max(0, c + (nextLiked ? 1 : -1)))
+      setPulse(true)
+      if (pulseTimer.current) window.clearTimeout(pulseTimer.current)
+      pulseTimer.current = window.setTimeout(() => setPulse(false), 220)
+      if (nextLiked) {
+        setBurst(true)
+        if (burstTimer.current) window.clearTimeout(burstTimer.current)
+        burstTimer.current = window.setTimeout(() => setBurst(false), 450)
+      }
+
+      const postRef = doc(db, 'searchPosts', postId)
+      const likeRef = doc(db, 'searchPosts', postId, 'likes', userId)
+      try {
+        await runTransaction(db, async (tx) => {
+          const likeSnap = await tx.get(likeRef)
+          const postSnap = await tx.get(postRef)
+          const cur = ((postSnap.data() as any)?.likeCount ?? 0) as number
+          if (likeSnap.exists()) {
+            tx.delete(likeRef)
+            tx.update(postRef, { likeCount: Math.max(0, cur - 1) })
+          } else {
+            tx.set(likeRef, { userId, createdAt: serverTimestamp() })
+            tx.update(postRef, { likeCount: cur + 1 })
+          }
+        })
+      } catch (e) {
+        // 失敗時は元に戻す
+        setLiked(!nextLiked)
+        setCount((c) => Math.max(0, c + (nextLiked ? -1 : 1)))
+        console.error('like toggle failed', e)
+        alert('いいねの更新に失敗しました。')
+      } finally {
+        setBusy(false)
+      }
+    }
+
+    return (
+      <button
+        type="button"
+        onClick={toggle}
+        disabled={busy}
+        className="relative flex items-center gap-2 select-none pointer-events-auto cursor-pointer"
+        aria-pressed={liked}
+        aria-label={liked ? 'いいねを取り消す' : 'いいねする'}
+      >
+        {burst && (
+          <span className="absolute -inset-1 rounded-full animate-ping bg-pink-400/40 pointer-events-none" />
+        )}
+        <svg
+          className={`w-4 h-4 transition-transform duration-200 will-change-transform ${liked ? 'fill-pink-500' : ''} ${pulse ? 'scale-125' : ''}`}
+          viewBox="0 0 24 24"
+        >
+          <path d="M12 8c-2.2-3.2-6.5-3.2-8.6 0-1.8 2.6-1.2 6.0 1.1 8.0l6.46 5.35a1 1 0 0 0 1.28 0l6.46-5.35c2.3-2.0 2.9-5.4 1.1-8.0-2.1-3.2-6.4-3.2-8.6 0-.17.25-.36.53-.44.66-.08-.13-.27-.41-.44-.66Z"></path>
+        </svg>
+        <span className="tabular-nums">{count}</span>
+      </button>
+    )
+  }
+
 	return (
 		<div className="max-w-xl min-h-screen mx-auto space-y-4 border-x border-neutral-200 overscroll-y-contain" onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}>
 			<div className="border-b border-neutral-200 p-4">
@@ -172,20 +294,24 @@ export default function SearchPage() {
 					<div key={p.id} className="p-4 border-b border-neutral-200">
 						<div className="flex items-center gap-2">
 							<div className="flex min-w-11 min-h-11 rounded-full items-center justify-center bg-pink-500 text-white">{p.userName === "anonymous" ? "匿" : p.userName?.slice(0, 1)}</div>
-							<div className="flex gap-2 truncate">
-								{p.userId ? (
-								  <Link
-								    href={`/users/${p.userId}`}
-								    className="truncate text-sm text-gray-800 hover:underline"
-								    aria-label={`${p.userName ?? 'anonymous'}のプロフィールを開く`}
-								  >
-								    {p.userName ?? 'anonymous'}
-								  </Link>
-								) : (
-								  <span className="truncate text-sm text-gray-800">{p.userName ?? 'anonymous'}</span>
-								)}
-								<div className="text-sm text-gray-500">@{p.userId}</div>
-								{/*<div className="text-sm text-gray-800 whitespace-nowrap">{p.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>*/}
+							<div className="flex gap-2 items-center min-w-0">
+							  {p.userId ? (
+							    <Link
+							      href={`/users/${p.userId}`}
+							      className="text-sm text-gray-800 hover:underline font-medium flex-1 min-w-0"
+							      aria-label={`${p.userName ?? 'anonymous'}のプロフィールを開く`}
+							    >
+							      {p.userName ?? 'anonymous'}
+							    </Link>
+							  ) : (
+							    <span className="text-sm text-gray-800 font-medium flex-1 min-w-0">{p.userName ?? 'anonymous'}</span>
+							  )}
+							  <div
+							    className="text-sm text-gray-500 shrink min-w-0 max-w-[120px] truncate"
+							    title={`@${p.userId ?? ''}`}
+							  >
+							    @{shortUid(p.userId ?? '')}
+							  </div>
 							</div>
 						</div>
 						<div className="ml-13 mb-4 text-gray-900">{p.content}</div>
@@ -196,12 +322,7 @@ export default function SearchPage() {
 								</svg>
 								<span>0</span>
 							</div>
-							<div className="flex items-center gap-2">
-								<svg className="w-4 h-4" viewBox="0 0 24 24">
-									<path d="M12 8c-2.2-3.2-6.5-3.2-8.6 0-1.8 2.6-1.2 6.0 1.1 8.0l6.46 5.35a1 1 0 0 0 1.28 0l6.46-5.35c2.3-2.0 2.9-5.4 1.1-8.0-2.1-3.2-6.4-3.2-8.6 0-.17.25-.36.53-.44.66-.08-.13-.27-.41-.44-.66Z"></path>
-								</svg>
-								<span>0</span>
-							</div>
+							<LikeButton postId={p.id} userId={auth.currentUser?.uid ?? null} />
 						</div>
 					</div>
 				))}
