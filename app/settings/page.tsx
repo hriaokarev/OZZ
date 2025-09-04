@@ -395,7 +395,7 @@ export default function SettingsPage() {
           <div className="flex items-center justify-between py-4">
             <div>
               <div className="font-semibold">バージョン</div>
-              <div className="text-sm text-neutral-500">OZZ v2.1.1</div>
+              <div className="text-sm text-neutral-500">OZZ v2.2</div>
             </div>
           </div>
         </div>

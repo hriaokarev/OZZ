@@ -3,7 +3,7 @@
 import { useEffect } from 'react'
 import '@/lib/firebase'
 import { getMessaging, isSupported, onMessage } from 'firebase/messaging'
-
+const SW_VERSION = '2025-09-04-01'; 
 export default function SWRegister() {
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return
