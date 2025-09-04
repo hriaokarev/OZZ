@@ -166,6 +166,16 @@ export default function ThreadRoomPage() {
       batch.update(threadRef, { messageCount: increment(1) })
       await batch.commit()
 
+      // ランキング即時反映トリガー（失敗してもUIは継続）
+      try {
+        if (typeof navigator !== 'undefined' && 'sendBeacon' in navigator) {
+          navigator.sendBeacon('/api/trending/touch')
+        } else {
+          // 一部環境向けフォールバック
+          fetch('/api/trending/touch', { method: 'POST', keepalive: true }).catch(() => {})
+        }
+      } catch {}
+
       setInput('')
       requestAnimationFrame(() =>
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
