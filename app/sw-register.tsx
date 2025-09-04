@@ -15,7 +15,7 @@ export default function SWRegister() {
     const appId = process.env.NEXT_PUBLIC_FIREBASE_APP_ID
 
     // 強制更新＆自己修復用のバージョン（更新時は数字を上げる）
-    const VERSION = '11'
+    const VERSION = '12'
 
     const params = new URLSearchParams()
     if (msid) params.set('msid', msid)
