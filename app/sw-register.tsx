@@ -8,6 +8,14 @@ export default function SWRegister() {
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return
 
+    let controllerChanged = false
+    const onControllerChange = () => {
+      if (controllerChanged) return
+      controllerChanged = true
+      window.location.reload()
+    }
+    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange)
+
     // ---- ENV から取得（msid だけでも FCM 初期化は可） ----
     const msid = process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
     const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY
@@ -56,13 +64,20 @@ export default function SWRegister() {
 
       if (!activeReg) return
 
+      const activateNow = () => {
+        try { activeReg!.waiting?.postMessage?.({ type: 'SKIP_WAITING' }) } catch {}
+      }
+
+      try { activeReg.update() } catch {}
+      if (activeReg.waiting) activateNow()
+
       // 新 SW が入ったら即時反映（既存機能は保持）
       activeReg.addEventListener('updatefound', () => {
         const installing = activeReg!.installing
         if (!installing) return
         installing.addEventListener('statechange', () => {
           if (installing.state === 'installed' && navigator.serviceWorker.controller) {
-            activeReg!.waiting?.postMessage?.({ type: 'SKIP_WAITING' })
+            activateNow()
           }
         })
       })
@@ -95,6 +110,7 @@ export default function SWRegister() {
         if (projectId) cfg.projectId = projectId
         if (appId) cfg.appId = appId
         const reg = await navigator.serviceWorker.getRegistration('/')
+        await reg?.update()
         ;(reg?.active || reg?.waiting || reg?.installing)?.postMessage({ type: 'FCM_INIT', cfg })
       } catch {}
     }
@@ -102,6 +118,7 @@ export default function SWRegister() {
 
     return () => {
       document.removeEventListener('visibilitychange', onVis)
+      navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange)
     }
   }, [])
 
