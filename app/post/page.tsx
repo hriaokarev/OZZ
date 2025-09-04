@@ -1,7 +1,7 @@
 // app/search/page.tsx
 'use client'
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, memo } from "react";
 import Link from 'next/link'
 import { db, auth } from '@/lib/firebase'
 import { fetchSearchPostsOnce, SearchPost } from '@/lib/useSearchPosts'
@@ -40,6 +40,120 @@ function shortUid(uid?: string, head = 6, tail = 4) {
   return `${uid.slice(0, head)}…${uid.slice(-tail)}`
 }
 
+const LikeButton = memo(function LikeButton({ postId, userId }: { postId: string; userId: string | null }) {
+  const [liked, setLiked] = useState(false)
+  const [count, setCount] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [pulse, setPulse] = useState(false)
+  const [burst, setBurst] = useState(false)
+  const pulseTimer = useRef<number | null>(null)
+  const burstTimer = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (pulseTimer.current) window.clearTimeout(pulseTimer.current)
+      if (burstTimer.current) window.clearTimeout(burstTimer.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        // 自分が押しているか（ワンショット）
+        if (userId) {
+          const myLikeRef = doc(db, 'searchPosts', postId, 'likes', userId)
+          const mySnap = await getDoc(myLikeRef)
+          setLiked(mySnap.exists())
+        } else {
+          setLiked(false)
+        }
+
+        // いいね数（post.likeCount があればそれを、無ければ likes を1回だけ集計）
+        const postRef = doc(db, 'searchPosts', postId)
+        const postSnap = await getDoc(postRef)
+        const lc = (postSnap.data() as any)?.likeCount
+        if (typeof lc === 'number') {
+          setCount(lc)
+        } else {
+          const agg = await getCountFromServer(query(collection(db, 'searchPosts', postId, 'likes')))
+          setCount(agg.data().count)
+        }
+      } catch (e) {
+        console.warn('like init failed', e)
+      }
+    })()
+  }, [postId, userId])
+
+  const toggle = async () => {
+    if (!userId) {
+      alert('いいねにはログインが必要です。')
+      return
+    }
+    if (busy) return
+    setBusy(true)
+
+    // Optimistic UI + animation
+    const nextLiked = !liked
+    setLiked(nextLiked)
+    setCount((c) => Math.max(0, c + (nextLiked ? 1 : -1)))
+    setPulse(true)
+    if (pulseTimer.current) window.clearTimeout(pulseTimer.current)
+    pulseTimer.current = window.setTimeout(() => setPulse(false), 220)
+    if (nextLiked) {
+      setBurst(true)
+      if (burstTimer.current) window.clearTimeout(burstTimer.current)
+      burstTimer.current = window.setTimeout(() => setBurst(false), 450)
+    }
+
+    const postRef = doc(db, 'searchPosts', postId)
+    const likeRef = doc(db, 'searchPosts', postId, 'likes', userId)
+    try {
+      await runTransaction(db, async (tx) => {
+        const likeSnap = await tx.get(likeRef)
+        const postSnap = await tx.get(postRef)
+        const cur = ((postSnap.data() as any)?.likeCount ?? 0) as number
+        if (likeSnap.exists()) {
+          tx.delete(likeRef)
+          tx.update(postRef, { likeCount: Math.max(0, cur - 1) })
+        } else {
+          tx.set(likeRef, { userId, createdAt: serverTimestamp() })
+          tx.update(postRef, { likeCount: cur + 1 })
+        }
+      })
+    } catch (e) {
+      // 失敗時は元に戻す
+      setLiked(!nextLiked)
+      setCount((c) => Math.max(0, c + (nextLiked ? -1 : 1)))
+      console.error('like toggle failed', e)
+      alert('いいねの更新に失敗しました。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      disabled={busy}
+      className="relative flex items-center gap-2 select-none pointer-events-auto cursor-pointer"
+      aria-pressed={liked}
+      aria-label={liked ? 'いいねを取り消す' : 'いいねする'}
+    >
+      {burst && (
+        <span className="absolute -inset-1 rounded-full animate-ping bg-pink-400/40 pointer-events-none" />
+      )}
+      <svg
+        className={`w-4 h-4 transition-transform duration-200 will-change-transform ${liked ? 'fill-pink-500' : ''} ${pulse ? 'scale-125' : ''}`}
+        viewBox="0 0 24 24"
+      >
+        <path d="M12 8c-2.2-3.2-6.5-3.2-8.6 0-1.8 2.6-1.2 6.0 1.1 8.0l6.46 5.35a1 1 0 0 0 1.28 0l6.46-5.35c2.3-2.0 2.9-5.4 1.1-8.0-2.1-3.2-6.4-3.2-8.6 0-.17.25-.36.53-.44.66-.08-.13-.27-.41-.44-.66Z"></path>
+      </svg>
+      <span className="tabular-nums">{count}</span>
+    </button>
+  )
+})
+
 export default function SearchPage() {
 	const [posts, setPosts] = useState<SearchPost[]>([]);
 	const [loading, setLoading] = useState(false);
@@ -51,6 +165,8 @@ export default function SearchPage() {
 	const [readyToRefresh, setReadyToRefresh] = useState(false);
 	const startYRef = useRef<number | null>(null);
 	const threshold = 70; // px
+	const startXRef = useRef<number | null>(null);
+	const activateThreshold = 12; // 小さな触りは無視（px）
 
   // --- Post popup state (FAB -> Dialog) ---
   const [open, setOpen] = useState(false)
@@ -75,38 +191,55 @@ export default function SearchPage() {
 	};
 
 	const onTouchStart = (e: React.TouchEvent) => {
-		if (window.scrollY > 0) return; // 先頭以外では開始しない
-		startYRef.current = e.touches[0].clientY;
-		setIsPulling(true);
-	};
+    if (window.scrollY > 0) return; // 先頭以外では開始しない
+    const target = e.target as HTMLElement;
+    // いいねボタンやリンクなどインタラクティブ要素上での開始はPTR無効
+    if (target && target.closest && target.closest('button, a, input, textarea, [role="button"]')) return;
+    startYRef.current = e.touches[0].clientY;
+    startXRef.current = e.touches[0].clientX;
+    setIsPulling(true);
+  };
 
 	const onTouchMove = (e: React.TouchEvent) => {
-		if (!isPulling || startYRef.current === null) return;
-		const dy = e.touches[0].clientY - startYRef.current;
-		if (dy <= 0) {
-			setPullY(0);
-			setReadyToRefresh(false);
-			return;
-		}
-		// ダンピングして引っ張り量を調整
-		const damped = Math.min(120, dy * 0.5);
-		setPullY(damped);
-		setReadyToRefresh(damped >= threshold);
-		// 画面のラバーバンドを抑制
-		e.preventDefault();
-	};
+    if (!isPulling || startYRef.current === null) return;
+    const x = e.touches[0].clientX;
+    const y = e.touches[0].clientY;
+    const dy = y - startYRef.current;
+    const dx = startXRef.current == null ? 0 : x - startXRef.current;
+
+    // 横優位 or ほぼ動いていない → PTRは発動させない
+    if (Math.abs(dx) > Math.abs(dy) || Math.abs(dy) < activateThreshold) {
+      setPullY(0);
+      setReadyToRefresh(false);
+      return;
+    }
+
+    if (dy <= 0) {
+      setPullY(0);
+      setReadyToRefresh(false);
+      return;
+    }
+
+    // 明確に縦引きになった時だけダンプ＆preventDefault
+    const damped = Math.min(120, (dy - activateThreshold) * 0.5);
+    const h = Math.max(0, damped);
+    setPullY(h);
+    setReadyToRefresh(h >= threshold);
+    e.preventDefault();
+  };
 
 	const onTouchEnd = async () => {
-		if (!isPulling) return;
-		setIsPulling(false);
-		startYRef.current = null;
-		if (readyToRefresh) {
-			setPullY(threshold); // スナップ
-			await load();
-		}
-		setPullY(0);
-		setReadyToRefresh(false);
-	};
+    if (!isPulling) return;
+    setIsPulling(false);
+    startYRef.current = null;
+    startXRef.current = null;
+    if (readyToRefresh) {
+      setPullY(threshold); // スナップ
+      await load();
+    }
+    setPullY(0);
+    setReadyToRefresh(false);
+  };
 
   useEffect(() => {
     if (!taRef.current) return
@@ -157,119 +290,6 @@ export default function SearchPage() {
       setSubmitting(false)
       submittingRef.current = false
     }
-  }
-
-  function LikeButton({ postId, userId }: { postId: string; userId: string | null }) {
-    const [liked, setLiked] = useState(false)
-    const [count, setCount] = useState(0)
-    const [busy, setBusy] = useState(false)
-    const [pulse, setPulse] = useState(false)
-    const [burst, setBurst] = useState(false)
-    const pulseTimer = useRef<number | null>(null)
-    const burstTimer = useRef<number | null>(null)
-    useEffect(() => {
-      return () => {
-        if (pulseTimer.current) window.clearTimeout(pulseTimer.current)
-        if (burstTimer.current) window.clearTimeout(burstTimer.current)
-      }
-    }, [])
-
-    useEffect(() => {
-      (async () => {
-        try {
-          // 自分が押しているか（ワンショット）
-          if (userId) {
-            const myLikeRef = doc(db, 'searchPosts', postId, 'likes', userId)
-            const mySnap = await getDoc(myLikeRef)
-            setLiked(mySnap.exists())
-          } else {
-            setLiked(false)
-          }
-
-          // いいね数（post.likeCount があればそれを、無ければ likes を1回だけ集計）
-          const postRef = doc(db, 'searchPosts', postId)
-          const postSnap = await getDoc(postRef)
-          const lc = (postSnap.data() as any)?.likeCount
-          if (typeof lc === 'number') {
-            setCount(lc)
-          } else {
-            const agg = await getCountFromServer(query(collection(db, 'searchPosts', postId, 'likes')))
-            setCount(agg.data().count)
-          }
-        } catch (e) {
-          console.warn('like init failed', e)
-        }
-      })()
-    }, [postId, userId])
-
-    const toggle = async () => {
-      if (!userId) {
-        alert('いいねにはログインが必要です。')
-        return
-      }
-      if (busy) return
-      setBusy(true)
-
-      // Optimistic UI + animation
-      const nextLiked = !liked
-      setLiked(nextLiked)
-      setCount((c) => Math.max(0, c + (nextLiked ? 1 : -1)))
-      setPulse(true)
-      if (pulseTimer.current) window.clearTimeout(pulseTimer.current)
-      pulseTimer.current = window.setTimeout(() => setPulse(false), 220)
-      if (nextLiked) {
-        setBurst(true)
-        if (burstTimer.current) window.clearTimeout(burstTimer.current)
-        burstTimer.current = window.setTimeout(() => setBurst(false), 450)
-      }
-
-      const postRef = doc(db, 'searchPosts', postId)
-      const likeRef = doc(db, 'searchPosts', postId, 'likes', userId)
-      try {
-        await runTransaction(db, async (tx) => {
-          const likeSnap = await tx.get(likeRef)
-          const postSnap = await tx.get(postRef)
-          const cur = ((postSnap.data() as any)?.likeCount ?? 0) as number
-          if (likeSnap.exists()) {
-            tx.delete(likeRef)
-            tx.update(postRef, { likeCount: Math.max(0, cur - 1) })
-          } else {
-            tx.set(likeRef, { userId, createdAt: serverTimestamp() })
-            tx.update(postRef, { likeCount: cur + 1 })
-          }
-        })
-      } catch (e) {
-        // 失敗時は元に戻す
-        setLiked(!nextLiked)
-        setCount((c) => Math.max(0, c + (nextLiked ? -1 : 1)))
-        console.error('like toggle failed', e)
-        alert('いいねの更新に失敗しました。')
-      } finally {
-        setBusy(false)
-      }
-    }
-
-    return (
-      <button
-        type="button"
-        onClick={toggle}
-        disabled={busy}
-        className="relative flex items-center gap-2 select-none pointer-events-auto cursor-pointer"
-        aria-pressed={liked}
-        aria-label={liked ? 'いいねを取り消す' : 'いいねする'}
-      >
-        {burst && (
-          <span className="absolute -inset-1 rounded-full animate-ping bg-pink-400/40 pointer-events-none" />
-        )}
-        <svg
-          className={`w-4 h-4 transition-transform duration-200 will-change-transform ${liked ? 'fill-pink-500' : ''} ${pulse ? 'scale-125' : ''}`}
-          viewBox="0 0 24 24"
-        >
-          <path d="M12 8c-2.2-3.2-6.5-3.2-8.6 0-1.8 2.6-1.2 6.0 1.1 8.0l6.46 5.35a1 1 0 0 0 1.28 0l6.46-5.35c2.3-2.0 2.9-5.4 1.1-8.0-2.1-3.2-6.4-3.2-8.6 0-.17.25-.36.53-.44.66-.08-.13-.27-.41-.44-.66Z"></path>
-        </svg>
-        <span className="tabular-nums">{count}</span>
-      </button>
-    )
   }
 
 	return (

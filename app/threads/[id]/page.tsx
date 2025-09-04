@@ -7,7 +7,6 @@ import Link from 'next/link'
 import { onAuthStateChanged } from 'firebase/auth'
 import { auth, db } from '@/lib/firebase'
 import {
-  addDoc,
   collection,
   doc,
   getDoc,
@@ -16,7 +15,9 @@ import {
   limit,
   query,
   serverTimestamp,
-  setDoc,
+  runTransaction,
+  increment,
+  writeBatch,
 } from 'firebase/firestore'
 
 // ---- Types ----------------------------------------------------
@@ -60,16 +61,19 @@ export default function ThreadRoomPage() {
     return delta <= threshold
   }
 
-  // 閲覧記録（1ユーザー1ドキュメント）
+  // 閲覧記録（1ユーザー1ドキュメント）+ 親 viewCount をトランザクションで +1（初回のみ）
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (!user || !threadId) return
       try {
+        const threadRef = doc(db, 'threads', threadId)
         const viewRef = doc(db, 'threads', threadId, 'views', user.uid)
-        const viewSnap = await getDoc(viewRef)
-        if (!viewSnap.exists()) {
-          await setDoc(viewRef, { viewedAt: serverTimestamp() })
-        }
+        await runTransaction(db, async (tx) => {
+          const vSnap = await tx.get(viewRef)
+          if (vSnap.exists()) return // 既にカウント済み
+          tx.set(viewRef, { userId: user.uid, viewedAt: serverTimestamp() })
+          tx.update(threadRef, { viewCount: increment(1) })
+        })
       } catch (e) {
         console.error('view記録エラー', e)
       }
@@ -150,12 +154,17 @@ export default function ThreadRoomPage() {
         }
       } catch {}
 
-      await addDoc(collection(db, 'threads', threadId, 'messages'), {
+      const batch = writeBatch(db)
+      const msgRef = doc(collection(db, 'threads', threadId, 'messages'))
+      const threadRef = doc(db, 'threads', threadId)
+      batch.set(msgRef, {
         content,
         userId: user.uid,
         authorName,
         createdAt: serverTimestamp(),
       })
+      batch.update(threadRef, { messageCount: increment(1) })
+      await batch.commit()
 
       setInput('')
       requestAnimationFrame(() =>

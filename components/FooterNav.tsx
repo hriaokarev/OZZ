@@ -1,7 +1,8 @@
 'use client'
 
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 
 type Item = {
 	href: string
@@ -62,6 +63,59 @@ function IconSettings({ active }: { active: boolean }) {
 
 export default function FooterNav() {
 	const pathname = usePathname()
+	const router = useRouter()
+	const navTimerRef = useRef<number | null>(null)
+	const navigatingRef = useRef(false)
+	const NAV_DELAY = 180 // ms: wait for pulse animation to finish before navigating
+
+	// tap animations (like LikeButton): pulse + burst
+	const [pulseKey, setPulseKey] = useState<string | null>(null)
+	const [burstKey, setBurstKey] = useState<string | null>(null)
+	const pulseTimerRef = useRef<number | null>(null)
+	const burstTimerRef = useRef<number | null>(null)
+
+	const handlePress = (href: string) => {
+		setPulseKey(href)
+		setBurstKey(href)
+		if (pulseTimerRef.current) window.clearTimeout(pulseTimerRef.current)
+		if (burstTimerRef.current) window.clearTimeout(burstTimerRef.current)
+		pulseTimerRef.current = window.setTimeout(() => setPulseKey(null), 180)
+		burstTimerRef.current = window.setTimeout(() => setBurstKey(null), 420)
+	}
+
+	useEffect(() => () => {
+		if (pulseTimerRef.current) window.clearTimeout(pulseTimerRef.current)
+		if (burstTimerRef.current) window.clearTimeout(burstTimerRef.current)
+		if (navTimerRef.current) window.clearTimeout(navTimerRef.current)
+	}, [])
+
+	const onLinkClick = (e: React.MouseEvent<HTMLAnchorElement>, href: string, active: boolean) => {
+		// Allow new tab / modified clicks / non-left clicks to behave normally
+		if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+
+		// If already on this page, just animate but don't navigate
+		if (active) {
+			e.preventDefault()
+			return
+		}
+
+		// Respect reduced motion: navigate immediately
+		const prefersReduced = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+		e.preventDefault()
+		if (navigatingRef.current) return
+		navigatingRef.current = true
+
+		// Start pulse/burst if not already started by mousedown/touchstart
+		handlePress(href)
+
+		const delay = prefersReduced ? 0 : NAV_DELAY
+		if (navTimerRef.current) window.clearTimeout(navTimerRef.current)
+		navTimerRef.current = window.setTimeout(() => {
+			router.push(href)
+			navigatingRef.current = false
+		}, delay)
+	}
 
 	const items: Item[] = [
 		{
@@ -109,11 +163,23 @@ export default function FooterNav() {
 						<li key={it.href}>
 							<Link
 								href={it.href}
-								className="flex h-18 flex-col items-center justify-center gap-1 outline-none focus-visible:ring-2 focus-visible:ring-pink-500"
+								onMouseDown={() => handlePress(it.href)}
+								onTouchStart={() => handlePress(it.href)}
+								onClick={(e) => onLinkClick(e, it.href, active)}
+								className="relative flex h-18 flex-col items-center justify-center gap-1 outline-none transition-transform duration-150 active:scale-95 focus-visible:ring-2 focus-visible:ring-pink-500"
 								aria-current={active ? 'page' : undefined}
 							>
-								{it.icon}
-								<span className={active ? 'text-[11px] font-semibold text-pink-600' : 'text-[11px] text-gray-500'}>
+								<div className="relative">
+									{burstKey === it.href && (
+										<span className="absolute -inset-2 rounded-full bg-pink-400/30 pointer-events-none animate-ping" />
+									)}
+									<span className={`block transition-transform duration-150 ${pulseKey === it.href ? 'scale-110' : ''}`}>
+										{it.icon}
+									</span>
+								</div>
+								<span
+									className={`${active ? 'text-[11px] font-semibold text-pink-600' : 'text-[11px] text-gray-500'} inline-block transition-transform duration-150 ${pulseKey === it.href ? 'scale-105' : ''}`}
+								>
 									{it.label}
 								</span>
 							</Link>

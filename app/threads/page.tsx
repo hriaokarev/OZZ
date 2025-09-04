@@ -45,6 +45,7 @@ export default function ThreadsPage() {
   const [description, setDescription] = useState('')
   const [genre, setGenre] = useState('雑談')
   const [threads, setThreads] = useState<Thread[]>([])
+  const [firstLoaded, setFirstLoaded] = useState(false)
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const nameCacheRef = useRef<Map<string, string>>(new Map())
@@ -54,9 +55,6 @@ export default function ThreadsPage() {
   // 表示モード: トレンド / 新着 / 作成順 / ジャンル別人気
   const [mode, setMode] = useState<'trend' | 'new' | 'created' | 'genre:雑談' | 'genre:恋愛' | 'genre:ゲーム' | 'genre:１８禁'>('trend')
 
-  // 各スレッドのライブ件数（views/messages）を保持
-  const [liveCounts, setLiveCounts] = useState<Record<string, { views: number; messages: number }>>({})
-  const countsUnsubsRef = useRef<Record<string, { views?: () => void; messages?: () => void }>>({})
 
   const disabled = useMemo(
     () => !name.trim() || name.length > NAME_MAX || description.length > DESC_MAX,
@@ -64,12 +62,7 @@ export default function ThreadsPage() {
   )
 
   const displayThreads = useMemo(() => {
-    const getScore = (t: Thread) => {
-      const lc = liveCounts[t.id]
-      const views = lc?.views ?? (t.viewCount ?? 0)
-      const msgs = lc?.messages ?? (t.messageCount ?? 0)
-      return views * 10 + msgs
-    }
+    const getScore = (t: Thread) => (t.viewCount ?? 0) * 10 + (t.messageCount ?? 0)
     let arr = [...threads]
     if (mode === 'trend') {
       arr.sort((a, b) => {
@@ -99,7 +92,7 @@ export default function ThreadsPage() {
       return arr
     }
     return arr
-  }, [threads, liveCounts, mode])
+  }, [threads, mode])
 
   // 一覧: 最新50件のみ購読（高速・省コスト）
   useEffect(() => {
@@ -128,49 +121,7 @@ export default function ThreadsPage() {
         }
       })
       setThreads(list)
-
-      // --- 各スレッドの views / messages サブコレクションを購読して件数を反映 ---
-      const currentIds = new Set(list.map((t) => t.id))
-
-      // 不要になった購読を解除
-      for (const id of Object.keys(countsUnsubsRef.current)) {
-        if (!currentIds.has(id)) {
-          try { countsUnsubsRef.current[id].views && countsUnsubsRef.current[id].views!() } catch {}
-          try { countsUnsubsRef.current[id].messages && countsUnsubsRef.current[id].messages!() } catch {}
-          delete countsUnsubsRef.current[id]
-          setLiveCounts((prev) => {
-            const cp = { ...prev }
-            delete cp[id]
-            return cp
-          })
-        }
-      }
-
-      // 新規スレッドに購読を張る
-      for (const t of list) {
-        if (!countsUnsubsRef.current[t.id]) {
-          const unsubViews = onSnapshot(
-            collection(db, 'threads', t.id, 'views'),
-            (snap) => {
-              setLiveCounts((prev) => ({
-                ...prev,
-                [t.id]: { views: snap.size || 0, messages: prev[t.id]?.messages ?? 0 },
-              }))
-            }
-          )
-          const unsubMsgs = onSnapshot(
-            collection(db, 'threads', t.id, 'messages'),
-            (snap) => {
-              setLiveCounts((prev) => ({
-                ...prev,
-                [t.id]: { views: prev[t.id]?.views ?? (t.viewCount ?? 0), messages: snap.size || 0 },
-              }))
-            }
-          )
-          countsUnsubsRef.current[t.id] = { views: unsubViews, messages: unsubMsgs }
-        }
-      }
-
+      setFirstLoaded(true)
       // authorName が無いものは users/{uid} から一度だけ引いて補完 + サーバーへ書き戻し
       for (const t of list) {
         const uid = t.userId
@@ -207,12 +158,6 @@ export default function ThreadsPage() {
     })
     return () => {
       unsub()
-      // サブコレ購読も全解除
-      for (const id of Object.keys(countsUnsubsRef.current)) {
-        try { countsUnsubsRef.current[id].views && countsUnsubsRef.current[id].views!() } catch {}
-        try { countsUnsubsRef.current[id].messages && countsUnsubsRef.current[id].messages!() } catch {}
-      }
-      countsUnsubsRef.current = {}
     }
   }, [authorNameMap])
 
@@ -300,7 +245,17 @@ export default function ThreadsPage() {
 
       {/* 一覧（1枚内に表示） */}
       <div className="px-2">
-        {displayThreads.length === 0 ? (
+        {!firstLoaded ? (
+          <ul className="space-y-3">
+            {[0,1,2,3].map((i) => (
+              <li key={i} className="animate-pulse rounded-xl border border-neutral-200 bg-neutral-100 p-4">
+                <div className="h-3 w-24 bg-neutral-200 rounded mb-2" />
+                <div className="h-5 w-48 bg-neutral-300 rounded mb-2" />
+                <div className="h-3 w-32 bg-neutral-200 rounded" />
+              </li>
+            ))}
+          </ul>
+        ) : displayThreads.length === 0 ? (
           <div className="text-center text-neutral-500 py-10">
             スレッドはまだありません
           </div>
@@ -342,8 +297,8 @@ export default function ThreadsPage() {
                       )}
                       <div className="mt-2 flex items-center gap-3 text-xs text-neutral-500">
                         {t.createdAtText && <span>{t.createdAtText}</span>}
-                        <span>👁 {liveCounts[t.id]?.views ?? (t.viewCount ?? 0)}人 見た</span>
-                        <span>💬 {liveCounts[t.id]?.messages ?? (t.messageCount ?? 0)}件</span>
+                        <span>👁 {t.viewCount ?? 0}人 見た</span>
+                        <span>💬 {t.messageCount ?? 0}件</span>
                       </div>
                     </div>
                     <span className="shrink-0 text-lg text-neutral-400">›</span>

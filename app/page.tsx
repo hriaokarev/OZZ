@@ -24,8 +24,7 @@ export default function HomePage() {
 
   // トレンディング（最新50件の中から views*10 + messages の上位3件）
   const [trendThreads, setTrendThreads] = useState<TrendThread[]>([])
-  const [trendLiveCounts, setTrendLiveCounts] = useState<Record<string, { views: number; messages: number }>>({})
-  const trendUnsubsRef = useRef<Record<string, { views?: () => void; messages?: () => void }>>({})
+  const [firstLoaded, setFirstLoaded] = useState(false)
 
   useEffect(() => {
     const q = query(collection(db, 'threads'), orderBy('createdAt', 'desc'), limit(50))
@@ -48,56 +47,15 @@ export default function HomePage() {
         }
       })
       setTrendThreads(list)
-
-      // サブコレ購読（views/messages）
-      const currentIds = new Set(list.map((t) => t.id))
-      for (const id of Object.keys(trendUnsubsRef.current)) {
-        if (!currentIds.has(id)) {
-          try { trendUnsubsRef.current[id].views && trendUnsubsRef.current[id].views!() } catch {}
-          try { trendUnsubsRef.current[id].messages && trendUnsubsRef.current[id].messages!() } catch {}
-          delete trendUnsubsRef.current[id]
-          setTrendLiveCounts((prev) => {
-            const cp = { ...prev }
-            delete cp[id]
-            return cp
-          })
-        }
-      }
-      for (const t of list) {
-        if (!trendUnsubsRef.current[t.id]) {
-          const unsubViews = onSnapshot(collection(db, 'threads', t.id, 'views'), (vsnap) => {
-            setTrendLiveCounts((prev) => ({
-              ...prev,
-              [t.id]: { views: vsnap.size || 0, messages: prev[t.id]?.messages ?? 0 },
-            }))
-          })
-          const unsubMsgs = onSnapshot(collection(db, 'threads', t.id, 'messages'), (msnap) => {
-            setTrendLiveCounts((prev) => ({
-              ...prev,
-              [t.id]: { views: prev[t.id]?.views ?? (t.viewCount ?? 0), messages: msnap.size || 0 },
-            }))
-          })
-          trendUnsubsRef.current[t.id] = { views: unsubViews, messages: unsubMsgs }
-        }
-      }
+      setFirstLoaded(true)
     })
     return () => {
       unsub()
-      for (const id of Object.keys(trendUnsubsRef.current)) {
-        try { trendUnsubsRef.current[id].views && trendUnsubsRef.current[id].views!() } catch {}
-        try { trendUnsubsRef.current[id].messages && trendUnsubsRef.current[id].messages!() } catch {}
-      }
-      trendUnsubsRef.current = {}
     }
   }, [])
 
   const trendTop3 = useMemo(() => {
-    const getScore = (t: TrendThread) => {
-      const lc = trendLiveCounts[t.id]
-      const views = lc?.views ?? (t.viewCount ?? 0)
-      const msgs = lc?.messages ?? (t.messageCount ?? 0)
-      return views * 10 + msgs
-    }
+    const getScore = (t: TrendThread) => (t.viewCount ?? 0) * 10 + (t.messageCount ?? 0)
     const arr = [...trendThreads]
     arr.sort((a, b) => {
       const s = getScore(b) - getScore(a)
@@ -105,7 +63,7 @@ export default function HomePage() {
       return (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)
     })
     return arr.slice(0, 3)
-  }, [trendThreads, trendLiveCounts])
+  }, [trendThreads])
 
   return (
     <div className="mx-auto min-h-screen max-w-xl border-x border-neutral-200 bg-white">
@@ -158,7 +116,17 @@ export default function HomePage() {
         <section>
           <h2 className="mb-4 text-lg font-bold">🔥 トレンディング</h2>
 
-          {trendTop3.length === 0 ? (
+          {!firstLoaded ? (
+            <ul className="space-y-3">
+              {[0,1,2].map((i) => (
+                <li key={i} className="relative overflow-hidden rounded-2xl border border-neutral-200 bg-neutral-50 p-4">
+                  <div className="h-4 w-16 bg-neutral-200 rounded mb-2 animate-pulse" />
+                  <div className="h-5 w-48 bg-neutral-300 rounded mb-2 animate-pulse" />
+                  <div className="h-3 w-40 bg-neutral-200 rounded animate-pulse" />
+                </li>
+              ))}
+            </ul>
+          ) : trendTop3.length === 0 ? (
             <div className="text-neutral-500 text-sm">まだありません</div>
           ) : (
             <ul className="space-y-3">
@@ -188,8 +156,8 @@ export default function HomePage() {
                         )}
                         <div className="mt-2 flex items-center gap-3 text-xs text-neutral-500">
                           {t.createdAtText && <span>{t.createdAtText}</span>}
-                          <span>👁 {trendLiveCounts[t.id]?.views ?? (t.viewCount ?? 0)}人 見た</span>
-                          <span>💬 {trendLiveCounts[t.id]?.messages ?? (t.messageCount ?? 0)}件</span>
+                          <span>👁 {t.viewCount ?? 0}人 見た</span>
+                          <span>💬 {t.messageCount ?? 0}件</span>
                         </div>
                       </div>
                       <span className="shrink-0 text-lg text-neutral-400">›</span>
