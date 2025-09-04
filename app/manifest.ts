@@ -3,8 +3,8 @@ import type { MetadataRoute } from 'next'
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: '名前募集中',
-    short_name: '名前募集中',
+    name: 'OZZ',
+    short_name: 'OZZ',
     start_url: '/',
     scope: '/',
     display: 'standalone',

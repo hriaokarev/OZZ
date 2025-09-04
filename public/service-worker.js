@@ -86,7 +86,7 @@ self.addEventListener('message', (e) => {
 // 以降はあなたのキャッシュ戦略（既存維持）
 // ========================
 
-const CACHE = 'app-cache-v3' // ← バージョン上げて確実に入れ替え
+const CACHE = 'app-cache-v4' // ← バージョン上げて確実に入れ替え
 const ASSETS = [
   '/', // 404 しないなら保持。不要なら外してOK
   '/manifest.webmanifest',
