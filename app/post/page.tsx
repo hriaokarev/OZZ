@@ -19,7 +19,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { addDoc, collection, serverTimestamp, doc, onSnapshot, runTransaction, getCountFromServer, query } from 'firebase/firestore'
+import { addDoc, collection, serverTimestamp, doc, runTransaction, getCountFromServer, query, getDoc } from 'firebase/firestore'
 
 // ---- Simple runtime cache for posts (survives within SPA session)
 type PostsCache = { items: SearchPost[]; ts: number };
@@ -43,6 +43,7 @@ function shortUid(uid?: string, head = 6, tail = 4) {
 export default function SearchPage() {
 	const [posts, setPosts] = useState<SearchPost[]>([]);
 	const [loading, setLoading] = useState(false);
+	const [refreshSeed, setRefreshSeed] = useState(0);
 
 	// Pull-to-refresh state
 	const [pullY, setPullY] = useState(0);
@@ -67,6 +68,7 @@ export default function SearchPage() {
 			const data = await fetchSearchPostsOnce(db);
 			setPosts(data);
 			setPostsCache(data); // ← キャッシュにも保存
+      setRefreshSeed((s) => s + 1);
 		} finally {
 			setLoading(false);
 		}
@@ -173,34 +175,31 @@ export default function SearchPage() {
     }, [])
 
     useEffect(() => {
-      // listen my like doc (existence = liked)
-      let unsubMy: (() => void) | undefined
-      if (userId) {
-        const myLikeRef = doc(db, 'searchPosts', postId, 'likes', userId)
-        unsubMy = onSnapshot(myLikeRef, (snap) => setLiked(snap.exists()))
-      } else {
-        setLiked(false)
-      }
-
-      // listen likeCount field on post (if present)
-      const postRef = doc(db, 'searchPosts', postId)
-      const unsubPost = onSnapshot(postRef, (snap) => {
-        const lc = (snap.data() as any)?.likeCount
-        if (typeof lc === 'number') setCount(lc)
-      })
-
-      // fallback: compute count once from likes subcollection if likeCount is missing
-      ;(async () => {
+      (async () => {
         try {
-          const agg = await getCountFromServer(query(collection(db, 'searchPosts', postId, 'likes')))
-          setCount(agg.data().count)
-        } catch {}
-      })()
+          // 自分が押しているか（ワンショット）
+          if (userId) {
+            const myLikeRef = doc(db, 'searchPosts', postId, 'likes', userId)
+            const mySnap = await getDoc(myLikeRef)
+            setLiked(mySnap.exists())
+          } else {
+            setLiked(false)
+          }
 
-      return () => {
-        unsubMy && unsubMy()
-        unsubPost()
-      }
+          // いいね数（post.likeCount があればそれを、無ければ likes を1回だけ集計）
+          const postRef = doc(db, 'searchPosts', postId)
+          const postSnap = await getDoc(postRef)
+          const lc = (postSnap.data() as any)?.likeCount
+          if (typeof lc === 'number') {
+            setCount(lc)
+          } else {
+            const agg = await getCountFromServer(query(collection(db, 'searchPosts', postId, 'likes')))
+            setCount(agg.data().count)
+          }
+        } catch (e) {
+          console.warn('like init failed', e)
+        }
+      })()
     }, [postId, userId])
 
     const toggle = async () => {
@@ -322,7 +321,7 @@ export default function SearchPage() {
 								</svg>
 								<span>0</span>
 							</div>
-							<LikeButton postId={p.id} userId={auth.currentUser?.uid ?? null} />
+							<LikeButton key={`like-${p.id}-${refreshSeed}`} postId={p.id} userId={auth.currentUser?.uid ?? null} />
 						</div>
 					</div>
 				))}
