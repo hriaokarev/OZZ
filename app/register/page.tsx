@@ -10,6 +10,7 @@ import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
 type Form = {
   name: string
   age: string
+  gender: string
   region: string
   agree: boolean
 }
@@ -29,12 +30,20 @@ const AGE_OPTIONS = (() => {
   return arr
 })()
 
+const GENDER_OPTIONS = [
+  '',
+  '男性',
+  '女性',
+  'ノンバイナリー',
+  '回答しない',
+]
+
 // ---- Limits ---------------------------------------------------
 const NAME_MAX = 10
 
 export default function RegisterPage() {
   const router = useRouter()
-  const [form, setForm] = useState<Form>({ name: '', age: '', region: '', agree: false })
+  const [form, setForm] = useState<Form>({ name: '', age: '', gender: '', region: '', agree: false })
   const [saving, setSaving] = useState(false)
 
   // サインイン済みなら displayName を初期値に
@@ -81,6 +90,7 @@ export default function RegisterPage() {
         {
           name: trimmed,
           age: form.age,
+          gender: form.gender || null,
           region: form.region,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -135,6 +145,23 @@ export default function RegisterPage() {
               {AGE_OPTIONS.map((a) => (
                 <option key={a} value={a}>
                   {a === '18+' ? '18歳以上' : a === '50+' ? '50歳以上' : `${a}歳`}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 性別 */}
+          <div className="mb-4">
+            <label className="mb-1 block text-sm font-medium">性別（任意）</label>
+            <select
+              value={form.gender}
+              onChange={(e) => setForm({ ...form, gender: e.target.value })}
+              className="w-full rounded-xl border-2 border-neutral-200 bg-white px-4 py-3 focus:border-pink-500 focus:outline-none"
+            >
+              <option value="">選択しない</option>
+              {GENDER_OPTIONS.filter((g) => g !== '').map((g) => (
+                <option key={g} value={g}>
+                  {g}
                 </option>
               ))}
             </select>

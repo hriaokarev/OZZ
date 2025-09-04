@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { auth, db, getMessagingSafe } from '@/lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
-import { doc, getDoc, setDoc, collection, getDocs, updateDoc, serverTimestamp } from 'firebase/firestore'
+import { doc, getDoc, getDocFromCache, getDocFromServer, setDoc, collection, getDocs, updateDoc, serverTimestamp } from 'firebase/firestore'
 import { getToken } from 'firebase/messaging'
 import FooterNav from '@/components/FooterNav'
 
@@ -16,6 +16,8 @@ type UserPrefs = {
   name?: string
   region?: string
   age?: string
+  gender?: string
+  comment?: string
   pushEnabled?: boolean
   dmEnabled?: boolean
   nightMode?: boolean
@@ -32,6 +34,8 @@ const PREFECTURES = [
 
 // ---- Limits ---------------------------------------------------
 const NAME_MAX = 10
+const COMMENT_MAX = 30
+const GENDER_OPTIONS = ['', '男性', '女性', 'ノンバイナリー', '回答しない']
 
 // ---- Push helpers -------------------------------------------------
 async function ensurePushTokenAndSync(opts: { dmEnabled: boolean }) {
@@ -115,6 +119,8 @@ export default function SettingsPage() {
     name: '',
     region: '',
     age: '',
+    gender: '',
+    comment: '',
     pushEnabled: true,
     dmEnabled: true,
     nightMode: false,
@@ -129,21 +135,55 @@ export default function SettingsPage() {
         return
       }
       try {
-        const snap = await getDoc(doc(db, 'users', user.uid))
-        if (snap.exists()) {
-          const d = snap.data() as any
-          setPrefs((p) => ({
-            ...p,
-            name: d.name ?? '',
-            region: d.region ?? '',
-            age: d.age ?? '',
-            pushEnabled: d.pushEnabled ?? true,
-            dmEnabled: d.dmEnabled ?? true,
-            nightMode: d.nightMode ?? false,
-            mentionEnabled: d.mentionEnabled ?? true,
-          }))
+        const ref = doc(db, 'users', user.uid)
+        let cacheShown = false
+        // 1) まず IndexedDB のキャッシュから即座に表示（あれば）
+        try {
+          const cached = await getDocFromCache(ref)
+          if (cached.exists()) {
+            const d = cached.data() as any
+            setPrefs((p) => ({
+              ...p,
+              name: d.name ?? '',
+              region: d.region ?? '',
+              age: d.age ?? '',
+              gender: d.gender ?? '',
+              comment: d.comment ?? '',
+              pushEnabled: d.pushEnabled ?? true,
+              dmEnabled: d.dmEnabled ?? true,
+              nightMode: d.nightMode ?? false,
+              mentionEnabled: d.mentionEnabled ?? true,
+            }))
+            setLoading(false)
+            cacheShown = true
+          }
+        } catch {}
+
+        // 2) 次にサーバーから最新を取得して上書き（オンライン時）
+        try {
+          const fresh = await getDocFromServer(ref)
+          if (fresh.exists()) {
+            const d = fresh.data() as any
+            setPrefs((p) => ({
+              ...p,
+              name: d.name ?? '',
+              region: d.region ?? '',
+              age: d.age ?? '',
+              gender: d.gender ?? '',
+              comment: d.comment ?? '',
+              pushEnabled: d.pushEnabled ?? true,
+              dmEnabled: d.dmEnabled ?? true,
+              nightMode: d.nightMode ?? false,
+              mentionEnabled: d.mentionEnabled ?? true,
+            }))
+            if (!cacheShown) setLoading(false)
+          } else if (!cacheShown) {
+            setLoading(false)
+          }
+        } catch {
+          if (!cacheShown) setLoading(false)
         }
-      } finally {
+      } catch {
         setLoading(false)
       }
     })
@@ -161,6 +201,8 @@ export default function SettingsPage() {
           name: (prefs.name ?? '').trim().slice(0, NAME_MAX),
           region: prefs.region ?? '',
           age: prefs.age ?? '',
+          gender: prefs.gender ?? '',
+          comment: (prefs.comment ?? '').trim().slice(0, COMMENT_MAX),
           pushEnabled: !!prefs.pushEnabled,
           dmEnabled: !!prefs.dmEnabled,
           nightMode: !!prefs.nightMode,
@@ -256,6 +298,36 @@ export default function SettingsPage() {
               placeholder="例: 20"
               className="w-full rounded-xl border-2 border-neutral-200 bg-white px-4 py-3 focus:border-pink-500 focus:outline-none"
             />
+          </div>
+
+          {/* 性別（任意） */}
+          <div className="mb-4">
+            <label className="mb-1 block text-sm font-medium">性別（任意）</label>
+            <select
+              value={prefs.gender || ''}
+              onChange={(e) => setPrefs({ ...prefs, gender: e.target.value })}
+              className="w-full rounded-xl border-2 border-neutral-200 bg-white px-4 py-3 focus:border-pink-500 focus:outline-none"
+            >
+              <option value="">選択しない</option>
+              {GENDER_OPTIONS.filter((g) => g !== '').map((g) => (
+                <option key={g} value={g}>{g}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* コメント（任意・30文字） */}
+          <div className="mb-6">
+            <label className="mb-1 block text-sm font-medium">コメント（任意・{COMMENT_MAX}文字）</label>
+            <input
+              value={prefs.comment ?? ''}
+              onChange={(e) => setPrefs({ ...prefs, comment: (e.target.value || '').slice(0, COMMENT_MAX) })}
+              maxLength={COMMENT_MAX}
+              placeholder="ひとことコメント"
+              className="w-full rounded-xl border-2 border-neutral-200 bg-white px-4 py-3 focus:border-pink-500 focus:outline-none"
+            />
+            <div className="mt-1 text-right text-xs text-neutral-500" aria-live="polite">
+              {(prefs.comment?.length ?? 0)}/{COMMENT_MAX}
+            </div>
           </div>
 
           <div className="flex items-center gap-2">

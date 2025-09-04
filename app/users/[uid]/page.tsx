@@ -9,6 +9,8 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromCache,
+  getDocFromServer,
   getDocs,
   limit,
   orderBy,
@@ -23,7 +25,9 @@ import {
 type UserDoc = {
   name?: string
   region?: string
-  age?: number
+  age?: number | string
+  gender?: string
+  comment?: string
   intro?: string
   photoURL?: string
   createdAt?: any
@@ -54,9 +58,16 @@ export default function UserProfilePage() {
     let alive = true
     ;(async () => {
       try {
-        // ユーザープロフィール
-        const u = await getDoc(doc(db, 'users', uid))
-        if (alive) setUser((u.data() as any) ?? {})
+        // ユーザープロフィール（キャッシュ優先 → サーバーで上書き）
+        const uref = doc(db, 'users', uid)
+        try {
+          const cached = await getDocFromCache(uref)
+          if (alive && cached.exists()) setUser((cached.data() as any) ?? {})
+        } catch {}
+        try {
+          const fresh = await getDocFromServer(uref)
+          if (alive && fresh.exists()) setUser((fresh.data() as any) ?? {})
+        } catch {}
 
         // そのユーザーが作った最近のスレッド（任意）
         const tq = query(
@@ -208,15 +219,22 @@ export default function UserProfilePage() {
           {/* info chips */}
           <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
             <span className="px-3 py-1 text-[13px] rounded-full bg-neutral-100 border border-neutral-200 text-neutral-600">地域: {user?.region ?? '未設定'}</span>
-            <span className="px-3 py-1 text-[13px] rounded-full bg-neutral-100 border border-neutral-200 text-neutral-600">年齢: {typeof user?.age === 'number' ? `${user.age}歳` : '未設定'}</span>
+            <span className="px-3 py-1 text-[13px] rounded-full bg-neutral-100 border border-neutral-200 text-neutral-600">
+              年齢: {typeof user?.age === 'number' ? `${user.age}歳` : (typeof user?.age === 'string' && user.age ? user.age : '未設定')}
+            </span>
+            <span className="px-3 py-1 text-[13px] rounded-full bg-neutral-100 border border-neutral-200 text-neutral-600">性別: {user?.gender ?? '未設定'}</span>
           </div>
 
           {/* bio */}
-          {user?.intro ? (
+          {(typeof user?.intro === 'string' && user.intro.trim()) ? (
             <p className="mt-3 text-[15px] text-neutral-600 leading-relaxed whitespace-pre-wrap">{user.intro}</p>
+          ) : (typeof user?.comment === 'string' && user.comment.trim()) ? (
+            // 自己紹介が未設定なら、コメントを代わりに表示
+            <p className="mt-3 text-[15px] text-neutral-600 leading-relaxed whitespace-pre-wrap">{user.comment}</p>
           ) : (
             <p className="mt-3 text-[15px] text-neutral-400">自己紹介は未設定です</p>
           )}
+
         </div>
 
         {/* stats */}
