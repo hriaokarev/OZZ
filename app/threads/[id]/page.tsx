@@ -191,7 +191,7 @@ export default function ThreadRoomPage() {
   return (
     <div className="mx-auto min-h-screen w-full max-w-xl bg-white text-black border-x border-neutral-200">
       {/* Header */}
-      <div className="fixed top-0 left-1/2 z-20 w-full -translate-x-1/2 bg-white/95 backdrop-blur border-b border-neutral-200" style={{maxWidth:'480px'}}>
+      <div className="fixed top-0 left-1/2 z-20 w-full max-w-xl -translate-x-1/2 bg-white/95 backdrop-blur border-b border-neutral-200">
         <div className="flex items-center justify-between px-5 py-4">
           <button
             type="button"
@@ -264,7 +264,7 @@ export default function ThreadRoomPage() {
       </main>
 
       {/* Chat input (fixed bottom, centered) */}
-      <div className="fixed bottom-0 left-1/2 z-30 w-full -translate-x-1/2 bg-white px-5 py-4 border-t border-neutral-200" style={{maxWidth:'480px'}}>
+      <div className="fixed bottom-0 left-1/2 z-30 w-full max-w-xl -translate-x-1/2 bg-white px-5 py-4 border-t border-neutral-200">
         <div className="mx-auto flex w-full max-w-xl items-end gap-3">
           <textarea
             id="thread-message-input"
