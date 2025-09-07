@@ -1,6 +1,7 @@
 // app/layout.tsx
 import './globals.css'
 import SWRegister from '@/app/sw-register' 
+import TokenKeeper from '@/components/system/TokenKeeper'
 import TrendNotifierClient from './TrendNotifierClient'
 
 export const metadata = {
@@ -15,6 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {children}
         <TrendNotifierClient />
         <SWRegister />
+        <TokenKeeper />
       </body>
     </html>
   )
