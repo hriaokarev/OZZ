@@ -18,6 +18,9 @@ export default function TokenKeeper() {
       const { isSupported, getMessaging, getToken } = await import('firebase/messaging')
       if (!(await isSupported())) return
 
+      // SW未対応（LINE WebView等）は何もしない
+      if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return
+
       const reg = await navigator.serviceWorker.ready
       // `app` を lib/firebase が export している想定（していなければ export 追加）
       const messaging = getMessaging()
@@ -61,6 +64,8 @@ export default function TokenKeeper() {
   }
 
   useEffect(() => {
+    if (typeof window === 'undefined') return
+
     // ログイン時に1回
     const unsub = auth.onAuthStateChanged((u) => {
       if (u) refreshToken('signin')
@@ -80,15 +85,20 @@ export default function TokenKeeper() {
     }
     document.addEventListener('visibilitychange', onVis)
 
-    // SW更新時は取り直す
-    navigator.serviceWorker.addEventListener?.('controllerchange', () => {
-      refreshToken('sw-update')
-    })
+    // SW更新時は取り直す（未対応環境では何もしない）
+    const hasSW = typeof navigator !== 'undefined' && 'serviceWorker' in navigator
+    const onSwChange = () => refreshToken('sw-update')
+    if (hasSW) {
+      try { navigator.serviceWorker.addEventListener?.('controllerchange', onSwChange) } catch {}
+    }
 
     return () => {
       unsub()
       clearInterval(i)
       document.removeEventListener('visibilitychange', onVis)
+      if (hasSW) {
+        try { navigator.serviceWorker.removeEventListener?.('controllerchange', onSwChange) } catch {}
+      }
     }
   }, [])
 
