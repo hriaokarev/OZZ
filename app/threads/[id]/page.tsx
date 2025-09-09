@@ -251,7 +251,10 @@ export default function ThreadRoomPage() {
     const user = auth.currentUser
     if (!content || !threadId) return
     if (!user) {
-      router.push(`/register?next=/threads/${threadId}`)
+      const here = typeof window !== 'undefined'
+        ? (window.location.pathname + window.location.search + window.location.hash)
+        : `/threads/${threadId}`
+      router.push(`/register?redirect=${encodeURIComponent(here)}`)
       return
     }
 
