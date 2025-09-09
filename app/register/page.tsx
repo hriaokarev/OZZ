@@ -2,7 +2,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { auth, db } from '@/lib/firebase'
 import { onAuthStateChanged, signInAnonymously, updateProfile } from 'firebase/auth'
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
@@ -43,6 +43,7 @@ const NAME_MAX = 10
 
 export default function RegisterPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [form, setForm] = useState<Form>({ name: '', age: '', gender: '', region: '', agree: false })
   const [saving, setSaving] = useState(false)
 
@@ -101,7 +102,24 @@ export default function RegisterPage() {
       // 任意: Push サブスクを保存（NEXT_PUBLIC_FCM_VAPID_KEY が必要）
       registerPushSubscription().catch(() => {})
 
-      router.push('/') // どこへ遷移するかは好みで
+      // リダイレクト先を決定（?redirect=/foo 優先、同一オリジンのリファラ次点）
+      let dest = '/'
+      try {
+        const redirect = searchParams.get('redirect') || ''
+        if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
+          dest = redirect
+        } else if (typeof window !== 'undefined') {
+          const ref = document.referrer || ''
+          if (ref) {
+            const u = new URL(ref)
+            if (u.origin === window.location.origin) {
+              dest = u.pathname + u.search + u.hash
+              if (dest === '/register') dest = '/'
+            }
+          }
+        }
+      } catch {}
+      router.replace(dest)
     } finally {
       setSaving(false)
     }
