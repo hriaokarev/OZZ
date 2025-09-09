@@ -15,6 +15,25 @@ export default function TrendNotifierClient() {
   const router = useRouter()
 
   useEffect(() => {
+    const onSWMessage = (e: any) => {
+      const data = e?.data || {}
+      if (data?.type !== 'TRENDING') return
+      const threadId = data.threadId || data.id
+      const rk = Number(data.rank ?? data.newRank ?? data.to ?? 0)
+      const title = data.title || 'スレッド'
+      if (!threadId || !rk) return
+      setNotice({ title: `「${title}」が第${rk}位にランクイン`, url: data.link || `/threads/${threadId}` })
+      setTimeout(() => setShow(true), 0)
+    }
+    try {
+      if (typeof navigator !== 'undefined' && navigator.serviceWorker) {
+        navigator.serviceWorker.addEventListener('message', onSWMessage as any)
+        return () => navigator.serviceWorker.removeEventListener('message', onSWMessage as any)
+      }
+    } catch {}
+  }, [])
+
+  useEffect(() => {
     const ref = doc(db, 'system', 'trending_state')
     const unsub = onSnapshot(ref, (snap) => {
       const s = snap.data() as any
@@ -38,16 +57,18 @@ export default function TrendNotifierClient() {
       // changed は配列想定（なければ何もしない）
       const changedArr = Array.isArray(s.changed) ? s.changed : []
       if (changedArr.length === 0) return
-      const top = changedArr[0]
-      const rk = top?.newRank ?? 0
+      const top = changedArr[0] || {}
+      const threadId = top.threadId || top.id
+      const rk = Number(top.newRank ?? top.to ?? 0)
+      if (!threadId || !rk) return
       const title =
-        s.top3?.find?.((t: any) => t.id === top.threadId)?.title ||
+        (Array.isArray(s.top3) ? s.top3.find((t: any) => t.id === threadId)?.title : undefined) ||
         s.title ||
         'スレッド'
 
       setNotice({
         title: `「${title}」が第${rk}位にランクイン`,
-        url: `/threads/${top.threadId}`,
+        url: `/threads/${threadId}`,
       })
       // 次フレームで入場アニメ
       setTimeout(() => setShow(true), 0)

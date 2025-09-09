@@ -52,6 +52,10 @@ export default function ThreadsPage() {
   const pendingRef = useRef<Set<string>>(new Set())
   const [authorNameMap, setAuthorNameMap] = useState<Record<string, string>>({})
 
+  // サーバ集計済みのランキング（/system/trending_state.ranks）
+  const [ranks, setRanks] = useState<Record<string, number>>({})
+  const [ranksReady, setRanksReady] = useState(false)
+
   // 表示モード: トレンド / 新着 / 作成順 / ジャンル別人気
   const [mode, setMode] = useState<'trend' | 'new' | 'created' | 'genre:雑談' | 'genre:恋愛' | 'genre:ゲーム' | 'genre:１８禁'>('trend')
 
@@ -65,6 +69,18 @@ export default function ThreadsPage() {
     const getScore = (t: Thread) => (t.viewCount ?? 0) * 10 + (t.messageCount ?? 0)
     let arr = [...threads]
     if (mode === 'trend') {
+      if (Object.keys(ranks).length > 0) {
+        // サーバの ranks に載っているものだけ、順位順に
+        arr = arr.filter((t) => typeof ranks[t.id] === 'number')
+        arr.sort((a, b) => {
+          const ra = ranks[a.id] ?? Number.POSITIVE_INFINITY
+          const rb = ranks[b.id] ?? Number.POSITIVE_INFINITY
+          if (ra !== rb) return ra - rb
+          return (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)
+        })
+        return arr
+      }
+      // フォールバック（ranks未着の瞬間は従来スコア）
       arr.sort((a, b) => {
         const s = getScore(b) - getScore(a)
         if (s !== 0) return s
@@ -84,6 +100,18 @@ export default function ThreadsPage() {
     if (mode.startsWith('genre:')) {
       const g = mode.split(':')[1]
       arr = arr.filter((t) => (t.genre || '') === g)
+      if (Object.keys(ranks).length > 0) {
+        // 同じく ranks 順。ジャンル内で ranks が無いものは表示しない
+        arr = arr.filter((t) => typeof ranks[t.id] === 'number')
+        arr.sort((a, b) => {
+          const ra = ranks[a.id] ?? Number.POSITIVE_INFINITY
+          const rb = ranks[b.id] ?? Number.POSITIVE_INFINITY
+          if (ra !== rb) return ra - rb
+          return (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)
+        })
+        return arr
+      }
+      // フォールバック
       arr.sort((a, b) => {
         const s = getScore(b) - getScore(a)
         if (s !== 0) return s
@@ -92,7 +120,18 @@ export default function ThreadsPage() {
       return arr
     }
     return arr
-  }, [threads, mode])
+  }, [threads, mode, ranks])
+
+  // サーバのランキング状態を購読
+  useEffect(() => {
+    const ref = doc(db, 'system', 'trending_state')
+    const unsub = onSnapshot(ref, (snap) => {
+      const d: any = snap.data()
+      setRanks((d?.ranks as Record<string, number>) || {})
+      setRanksReady(true)
+    })
+    return () => unsub()
+  }, [])
 
   // 一覧: 最新50件のみ購読（高速・省コスト）
   useEffect(() => {
@@ -271,23 +310,24 @@ export default function ThreadsPage() {
                         {(t.authorName || '未設定')}・{t.genre || '未分類'}
                       </div>
                       <h2 className="font-semibold truncate flex items-center gap-2">
-                        {(mode === 'trend' || mode.startsWith('genre:')) && (
-                          <>
-                            {idx < 3 && (
-                              <span className="inline-flex h-5 w-5 items-center justify-center" aria-hidden>
-                                <svg
-                                  viewBox="0 0 24 24"
-                                  className={`h-4 w-4 ${idx === 0 ? 'text-yellow-400' : idx === 1 ? 'text-gray-400' : 'text-amber-700'}`}
-                                  fill="currentColor"
-                                >
-                                  <path d="M4 19h16v2H4z"/>
-                                  <path d="M3 7l4.5 3.5L10.5 5l3 5.5L20 7l-2 10H5L3 7z"/>
-                                </svg>
-                              </span>
-                            )}
-                            <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-pink-600 px-1 text-[11px] font-bold text-white">#{idx + 1}</span>
-                          </>
-                        )}
+                        {(mode === 'trend' || mode.startsWith('genre:')) && (() => {
+                          const r = ranks[t.id]
+                          const showCrown = typeof r === 'number' && r >= 1 && r <= 3
+                          const crownClass = r === 1 ? 'text-yellow-400' : r === 2 ? 'text-gray-400' : 'text-amber-700'
+                          return (
+                            <>
+                              {showCrown && (
+                                <span className="inline-flex h-5 w-5 items-center justify-center" aria-hidden>
+                                  <svg viewBox="0 0 24 24" className={`h-4 w-4 ${crownClass}`} fill="currentColor">
+                                    <path d="M4 19h16v2H4z"/>
+                                    <path d="M3 7l4.5 3.5L10.5 5l3 5.5L20 7l-2 10H5L3 7z"/>
+                                  </svg>
+                                </span>
+                              )}
+                              <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-pink-600 px-1 text-[11px] font-bold text-white">#{typeof r === 'number' ? r : (idx + 1)}</span>
+                            </>
+                          )
+                        })()}
                         <span className="truncate">{t.name}</span>
                       </h2>
                       {t.description && (

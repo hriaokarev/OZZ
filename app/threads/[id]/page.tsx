@@ -35,6 +35,53 @@ function clipText(s?: string, max = 40) {
   return s.length > max ? s.slice(0, max) + '…' : s
 }
 
+// ---- Trending helpers (client-side bump/touch) -----------------
+const VIEW_BUMP_COOLDOWN_MS = 60_000
+const TOUCH_COOLDOWN_MS = 60_000
+
+function postJSON(url: string, data: any) {
+  try {
+    const payload = JSON.stringify(data)
+    if (typeof navigator !== 'undefined' && 'sendBeacon' in navigator) {
+      const blob = new Blob([payload], { type: 'application/json' })
+      ;(navigator as any).sendBeacon(url, blob)
+      return
+    }
+    fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: payload,
+      keepalive: true,
+    }).catch(() => {})
+  } catch {}
+}
+
+function bumpThread(threadId: string, type: 'view' | 'message') {
+  if (!threadId) return
+  postJSON('/api/trending/bump', { threadId, type })
+}
+
+function touchDebounced(threadId: string) {
+  const key = `ozz_touch_${threadId}`
+  try {
+    const now = Date.now()
+    const last = Number(localStorage.getItem(key) || '0')
+    if (now - last < TOUCH_COOLDOWN_MS) return
+    localStorage.setItem(key, String(now))
+  } catch {}
+  postJSON('/api/trending/touch', {})
+}
+
+function isCooldownHit(key: string, ms: number) {
+  try {
+    const now = Date.now()
+    const last = Number(localStorage.getItem(key) || '0')
+    if (now - last < ms) return true
+    localStorage.setItem(key, String(now))
+  } catch {}
+  return false
+}
+
 export default function ThreadRoomPage() {
   const { id } = useParams<{ id: string }>()
   const threadId = id
@@ -74,6 +121,15 @@ export default function ThreadRoomPage() {
           tx.set(viewRef, { userId: user.uid, viewedAt: serverTimestamp() })
           tx.update(threadRef, { viewCount: increment(1) })
         })
+
+        // 24hトレンド加点（閲覧）: ローカル60秒クールダウン
+        try {
+          const cdKey = `ozz_bump_view_${threadId}`
+          if (!isCooldownHit(cdKey, VIEW_BUMP_COOLDOWN_MS)) {
+            bumpThread(threadId, 'view')
+            touchDebounced(threadId)
+          }
+        } catch {}
       } catch (e) {
         console.error('view記録エラー', e)
       }
@@ -165,6 +221,9 @@ export default function ThreadRoomPage() {
       })
       batch.update(threadRef, { messageCount: increment(1) })
       await batch.commit()
+
+      // BUMP: メッセージ投稿で24hトレンドに加点
+      try { bumpThread(threadId, 'message') } catch {}
 
       // ランキング即時反映トリガー（失敗してもUIは継続）
       try {
