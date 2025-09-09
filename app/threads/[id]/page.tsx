@@ -94,6 +94,8 @@ export default function ThreadRoomPage() {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [showDetail, setShowDetail] = useState(false)
+  const [showShareHint, setShowShareHint] = useState(false)
+  const [showFirstVisitModal, setShowFirstVisitModal] = useState(false)
   const sendingRef = useRef(false)
 
   const messagesBoxRef = useRef<HTMLDivElement>(null)
@@ -101,6 +103,34 @@ export default function ThreadRoomPage() {
   const lastMsgIdRef = useRef<string | null>(null)
 
   const headerDesc = clipText(description, 20)
+
+  // ---- Share helpers --------------------------------------------------
+  function makeThreadUrlAbs(id: string) {
+    const base = (process.env.NEXT_PUBLIC_BASE_URL as string) || (typeof window !== 'undefined' ? window.location.origin : '')
+    try {
+      return new URL(`/threads/${id}`, base).toString()
+    } catch {
+      return `${(base || '').replace(/\/$/, '')}/threads/${id}`
+    }
+  }
+
+  async function shareThisThread() {
+    try {
+      const url = makeThreadUrlAbs(threadId)
+      const titleText = title || 'スレッド'
+      // LINE等でURLにtextが連結されるのを避けるため、textは渡さない
+      if (typeof navigator !== 'undefined' && (navigator as any).share) {
+        await (navigator as any).share({ title: titleText, url })
+      } else if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(url)
+        alert('リンクをコピーしました')
+      }
+      setShowShareHint(false)
+      setShowFirstVisitModal(false)
+    } catch {
+      // キャンセル等は無視
+    }
+  }
 
   const isNearBottom = (el: HTMLDivElement | null, threshold = 80) => {
     if (!el) return true
@@ -187,6 +217,35 @@ export default function ThreadRoomPage() {
     return () => unsub()
   }, [threadId])
 
+  // 小バブルは1回だけ表示
+  useEffect(() => {
+    if (!threadId) return
+    try {
+      const key = `ozz_share_hint_seen_${threadId}`
+      const seen = localStorage.getItem(key)
+      if (!seen) {
+        setShowShareHint(true)
+        localStorage.setItem(key, '1')
+      }
+    } catch {}
+  }, [threadId])
+
+  useEffect(() => {
+    if (!threadId) return
+    try {
+      const modalKey = `ozz_share_modal_seen_${threadId}`
+      const seen = localStorage.getItem(modalKey)
+      if (!seen) {
+        setShowFirstVisitModal(true)
+        localStorage.setItem(modalKey, '1') // 初回だけ
+        // バブルも今後出さないように既読化
+        try { localStorage.setItem(`ozz_share_hint_seen_${threadId}`, '1') } catch {}
+        // 小バブルは消す
+        setShowShareHint(false)
+      }
+    } catch {}
+  }, [threadId])
+
   async function send() {
     const content = input.trim()
     const user = auth.currentUser
@@ -269,17 +328,31 @@ export default function ThreadRoomPage() {
               <p className="truncate text-[13px] text-neutral-500">#{genre}</p>
             )}
           </div>
-          <button
-            type="button"
-            onClick={() => setShowDetail(true)}
-            className="text-neutral-400 text-[20px]"
-            aria-haspopup="dialog"
-            aria-expanded={showDetail ? 'true' : 'false'}
-            aria-controls="thread-detail-dialog"
-            aria-label="詳細を開く"
-          >
-            ⋮
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={shareThisThread}
+              className="grid h-8 w-8 place-items-center rounded-md text-pink-600 hover:bg-pink-50"
+              aria-label="このルームをシェア"
+              title="シェア"
+            >
+              <svg viewBox="0 0 24 24" className="h-5 w-5 fill-current" aria-hidden="true">
+                <path d="M18 8a3 3 0 10-2.83-4A3 3 0 0018 8zM6 14a3 3 0 10.01 6A3 3 0 006 14zm12 0a3 3 0 10.01 6A3 3 0 0018 14zM8.8 13.3l6.5-3.2-.9-1.8-6.5 3.2.9 1.8zm0 3.4l6.5 3.2.9-1.8-6.5-3.2-.9 1.8z"/>
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowDetail(true)}
+              className="grid h-8 w-8 place-items-center rounded-md text-neutral-500 hover:bg-neutral-100 text-[20px]"
+              aria-haspopup="dialog"
+              aria-expanded={showDetail ? 'true' : 'false'}
+              aria-controls="thread-detail-dialog"
+              aria-label="詳細を開く"
+              title="詳細"
+            >
+              ⋮
+            </button>
+          </div>
         </div>
       </div>
 
@@ -394,6 +467,46 @@ export default function ThreadRoomPage() {
                 ジャンル: <span className="font-medium text-neutral-700">#{genre}</span>
               </p>
             )}
+          </div>
+        </div>
+      )}
+      {showFirstVisitModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-[120] flex items-center justify-center"
+        >
+          {/* backdrop */}
+          <button
+            className="absolute inset-0 bg-black/40"
+            aria-label="閉じる"
+            onClick={() => setShowFirstVisitModal(false)}
+          />
+
+          {/* modal card */}
+          <div className="relative mx-4 w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
+            <div className="mb-3 text-center">
+              <h3 className="text-lg font-bold">このスレッドをシェアしよう！</h3>
+              <p className="mt-2 text-[14px] text-neutral-600">
+                友だちに共有すると、もっと盛り上がるよ。
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                onClick={shareThisThread}
+                className="rounded-full bg-pink-600 px-5 py-2 text-sm font-bold text-white hover:bg-pink-700"
+                aria-label="シェアする"
+              >
+                シェアする
+              </button>
+              <button
+                onClick={() => setShowFirstVisitModal(false)}
+                className="rounded-full border border-neutral-300 px-5 py-2 text-sm font-bold text-neutral-700 hover:bg-neutral-100"
+                aria-label="あとで"
+              >
+                あとで
+              </button>
+            </div>
           </div>
         </div>
       )}
