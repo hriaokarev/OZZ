@@ -15,9 +15,9 @@ import {
   where,
   orderBy,
   onSnapshot,
-  limit,
   doc,
   getDoc,
+  getDocFromCache,
 } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
 
@@ -65,6 +65,36 @@ function ChatList() {
   const router = useRouter();
   const [items, setItems] = useState<ChatItem[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // 永続キャッシュキー
+  const LS_DM_LIST = 'ozz:dm:list:v2'
+  const LS_NAME_CACHE = 'ozz:user:nameCache:v1'
+
+  useEffect(() => {
+    const cache = getListCache()
+    try {
+      // DM一覧の永続キャッシュを即時反映
+      const raw = typeof window !== 'undefined' ? localStorage.getItem(LS_DM_LIST) : null
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (parsed && Array.isArray(parsed.items) && !cache.items.length) {
+          cache.items = parsed.items as ChatItem[]
+          setItems(parsed.items as ChatItem[])
+          setLoading(false)
+        }
+      }
+      // 名前キャッシュをロード（なければ空のまま）
+      const rawNames = typeof window !== 'undefined' ? localStorage.getItem(LS_NAME_CACHE) : null
+      if (rawNames && cache.nameCache && cache.nameCache.size === 0) {
+        const obj = JSON.parse(rawNames)
+        if (obj && typeof obj === 'object') {
+          for (const [uid, nm] of Object.entries(obj)) {
+            if (typeof nm === 'string') cache.nameCache.set(uid, nm)
+          }
+        }
+      }
+    } catch { /* noop */ }
+  }, [])
 
   // DM一覧のキャッシュ+購読（購読は使い回し、アンマウントでも解除しない）
   useEffect(() => {
@@ -131,6 +161,8 @@ function ChatList() {
           { includeMetadataChanges: true },
           async (snap) => {
             setLoading(true);
+            let nameCacheChanged = false
+
             let listChanged = false;
 
             for (const ch of snap.docChanges()) {
@@ -145,14 +177,20 @@ function ChatList() {
               }
 
               // otherName: resolve once & cache
-              let otherName = cache.nameCache.get(otherUid) || '名無し';
+              let otherName = cache.nameCache.get(otherUid) || '名無し'
               if (!cache.nameCache.has(otherUid)) {
                 try {
-                  const u = await getDoc(doc(db, 'users', otherUid));
-                  if (u.exists()) {
-                    const nm = ((u.data() as any)?.name ?? '名無し').toString().trim();
-                    cache.nameCache.set(otherUid, nm);
-                    otherName = nm;
+                  const uref = doc(db, 'users', otherUid)
+                  let u: any = null
+                  try { u = await getDocFromCache(uref) } catch {}
+                  if (!u || !u.exists()) {
+                    u = await getDoc(uref)
+                  }
+                  if (u && u.exists()) {
+                    const nm = ((u.data() as any)?.name ?? '名無し').toString().trim()
+                    cache.nameCache.set(otherUid, nm)
+                    otherName = nm
+                    nameCacheChanged = true
                   }
                 } catch {}
               }
@@ -211,6 +249,27 @@ function ChatList() {
                 }
               }
             }
+
+            try {
+              if (listChanged && typeof window !== 'undefined') {
+                // 必要フィールドだけ保存（軽量化）
+                const minimal = cache.items.map((x) => ({
+                  id: x.id,
+                  otherUid: x.otherUid,
+                  otherName: x.otherName,
+                  updatedAtText: x.updatedAtText,
+                  updatedAtMs: x.updatedAtMs,
+                  unread: x.unread,
+                  lastMessage: x.lastMessage,
+                }))
+                localStorage.setItem(LS_DM_LIST, JSON.stringify({ items: minimal, at: Date.now() }))
+              }
+              if (nameCacheChanged && typeof window !== 'undefined') {
+                const obj: Record<string, string> = {}
+                for (const [k, v] of cache.nameCache.entries()) obj[k] = v
+                localStorage.setItem(LS_NAME_CACHE, JSON.stringify(obj))
+              }
+            } catch { /* ignore */ }
 
             if (listChanged) {
               cache.items.sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0));

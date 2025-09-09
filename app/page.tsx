@@ -4,7 +4,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import FooterNav from '@/components/FooterNav'
-import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore'
+import { doc, getDoc, getDocFromCache, onSnapshot } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 
 type TrendThread = {
@@ -26,43 +26,89 @@ export default function HomePage() {
   const [trendThreads, setTrendThreads] = useState<TrendThread[]>([])
   const [firstLoaded, setFirstLoaded] = useState(false)
 
+  // 永続キャッシュ（ローカルストレージ）
+  const LS_KEY = 'ozz:home:trending:v2'
+
   useEffect(() => {
-    const q = query(collection(db, 'threads'), orderBy('createdAt', 'desc'), limit(50))
-    const unsub = onSnapshot(q, (snap) => {
-      const list: TrendThread[] = snap.docs.map((d) => {
-        const data: any = d.data()
-        const t: Date | undefined = data?.createdAt?.toDate?.()
-        return {
-          id: d.id,
-          name: data?.name ?? '(無題)',
-          description: data?.description ?? '',
-          genre: data?.genre ?? '',
-          authorName: data?.authorName ?? '',
-          createdAtText: t
-            ? t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            : '',
-          createdAtMs: t ? t.getTime() : 0,
-          messageCount: typeof data?.messageCount === 'number' ? data.messageCount : 0,
-          viewCount: typeof data?.viewCount === 'number' ? data.viewCount : 0,
+    try {
+      const raw = typeof window !== 'undefined' ? localStorage.getItem(LS_KEY) : null
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (parsed && Array.isArray(parsed.items)) {
+          setTrendThreads(parsed.items)
+          setFirstLoaded(true)
         }
-      })
-      setTrendThreads(list)
-      setFirstLoaded(true)
+      }
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => {
+    // サーバー集計のランキングを購読
+    const ref = doc(db, 'system', 'trending_state')
+    const unsub = onSnapshot(ref, { includeMetadataChanges: true }, async (snap) => {
+      try {
+        if (!snap.exists()) {
+          setTrendThreads([])
+          setFirstLoaded(true)
+          return
+        }
+        const s: any = snap.data() || {}
+        // server順序をそのまま採用（top3優先。無ければ ranks から1,2,3 を作る）
+        let top: { id: string; title?: string; rank?: number; score?: number }[] = Array.isArray(s.top3) ? s.top3 : []
+        if (!top.length && s.ranks && typeof s.ranks === 'object') {
+          // ranks: { [threadId]: rank } → rank=1..3 を抽出して並べ替え
+          top = Object.entries(s.ranks)
+            .map(([id, r]: any) => ({ id, rank: Number(r) }))
+            .filter((x) => x.rank && x.rank <= 3)
+            .sort((a, b) => (a.rank! - b.rank!))
+        }
+
+        // enrich: 各スレの詳細を取得（3件だけ・1回読み）
+        const enriched: TrendThread[] = []
+        for (const item of top.slice(0, 3)) {
+          const tid = item.id
+          try {
+            const refT = doc(db, 'threads', tid)
+            let snapT: any = null
+            try {
+              snapT = await getDocFromCache(refT)
+            } catch { /* no cache -> fallback */ }
+            if (!snapT || !snapT.exists()) {
+              snapT = await getDoc(refT)
+            }
+            const data: any = snapT && snapT.exists() ? snapT.data() : {}
+            const t: Date | undefined = data?.createdAt?.toDate?.()
+            enriched.push({
+              id: tid,
+              name: (data?.name ?? item.title ?? '(無題)') as string,
+              description: data?.description ?? '',
+              genre: data?.genre ?? '',
+              authorName: data?.authorName ?? '',
+              createdAtText: t ? t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+              createdAtMs: t ? t.getTime() : 0,
+              messageCount: typeof data?.messageCount === 'number' ? data.messageCount : 0,
+              viewCount: typeof data?.viewCount === 'number' ? data.viewCount : 0,
+            })
+          } catch (_) {
+            // ドキュメント取得に失敗してもタイトルだけで表示
+            enriched.push({ id: tid, name: item.title || '(無題)' })
+          }
+        }
+        setTrendThreads(enriched)
+        try {
+          if (typeof window !== 'undefined') {
+            localStorage.setItem(LS_KEY, JSON.stringify({ items: enriched, at: Date.now() }))
+          }
+        } catch { /* ignore */ }
+      } finally {
+        setFirstLoaded(true)
+      }
     })
-    return () => {
-      unsub()
-    }
+    return () => unsub()
   }, [])
 
   const trendTop3 = useMemo(() => {
-    const getScore = (t: TrendThread) => (t.viewCount ?? 0) * 10 + (t.messageCount ?? 0)
-    const arr = [...trendThreads]
-    arr.sort((a, b) => {
-      const s = getScore(b) - getScore(a)
-      if (s !== 0) return s
-      return (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0)
-    })
-    return arr.slice(0, 3)
+    return trendThreads.slice(0, 3)
   }, [trendThreads])
 
   return (
