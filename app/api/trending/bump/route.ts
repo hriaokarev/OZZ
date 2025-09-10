@@ -251,11 +251,9 @@ export async function POST(req: Request) {
 
       const trendScore24h = sumLastN(trendHourly, hour, 24)
 
-      const { FieldValue } = await import('firebase-admin/firestore')
-      const inc = FieldValue.increment
-      const counterPatch = type === 'view' ? { viewCount: inc(1) } : { messageCount: inc(1) }
-
-      tx.set(ref, { ...counterPatch, trendHourly, trendScore24h }, { merge: true })
+      // Counters (viewCount/messageCount) はクライアント側で更新する。
+      // ここではトレンド用の集計フィールドのみ更新して重複加算を防ぐ。
+      tx.set(ref, { trendHourly, trendScore24h }, { merge: true })
     })
   } catch (e) {
     return fail('tx-bump', e)
