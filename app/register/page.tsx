@@ -2,7 +2,7 @@
 'use client'
 
 import { Suspense, useEffect, useMemo, useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
 import { auth, db } from '@/lib/firebase'
 import { onAuthStateChanged, signInAnonymously, updateProfile } from 'firebase/auth'
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
@@ -43,7 +43,6 @@ const NAME_MAX = 10
 
 export default function RegisterPage() {
   const router = useRouter()
-  const searchParams = useSearchParams()
   const [form, setForm] = useState<Form>({ name: '', age: '', gender: '', region: '', agree: false })
   const [saving, setSaving] = useState(false)
 
@@ -105,7 +104,11 @@ export default function RegisterPage() {
       // リダイレクト先を決定（?redirect=/foo 優先、同一オリジンreferrerにフォールバック）
       let dest = '/'
       try {
-        const redirect = searchParams.get('redirect') || ''
+        let redirect = ''
+        if (typeof window !== 'undefined') {
+          const sp = new URLSearchParams(window.location.search)
+          redirect = sp.get('redirect') || ''
+        }
         if (redirect && redirect.startsWith('/') && !redirect.startsWith('//')) {
           dest = redirect
         } else if (typeof document !== 'undefined' && document.referrer) {
