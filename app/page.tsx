@@ -135,7 +135,7 @@ export default function HomePage() {
               <div>
                 <h3 className="mb-1 font-semibold">運営からのお知らせ</h3>
                 <p className="text-sm text-neutral-600">
-                  UIを安定させました！ここをこうして欲しい等あれば運営までお願いします！
+                  運営メンバーを募集いたします！！Xよりご連絡ください！https://x.com/sstets94ij62526?s=21
                 </p>
               </div>
             </div>
