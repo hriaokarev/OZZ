@@ -1,7 +1,7 @@
 // app/threads/[id]/page.tsx
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { onAuthStateChanged } from 'firebase/auth'
@@ -10,14 +10,17 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   orderBy,
   limit,
   query,
+  startAfter,
   serverTimestamp,
   runTransaction,
   increment,
   writeBatch,
+  DocumentSnapshot,
 } from 'firebase/firestore'
 
 // ---- Types ----------------------------------------------------
@@ -102,6 +105,16 @@ export default function ThreadRoomPage() {
   const bottomRef = useRef<HTMLDivElement>(null)
   const lastMsgIdRef = useRef<string | null>(null)
 
+  // ---- Paging (older logs) ---------------------------------------------
+  const PAGE = 50
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(true)
+  const topSentinelRef = useRef<HTMLDivElement | null>(null)
+  const oldestDocRef = useRef<DocumentSnapshot | null>(null)
+  const olderRef = useRef<Message[]>([])
+
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false)
+
   const headerDesc = clipText(description, 20)
 
   // ---- Share helpers --------------------------------------------------
@@ -182,13 +195,14 @@ export default function ThreadRoomPage() {
     })()
   }, [threadId])
 
-  // メッセージ購読（最新50件のみ取得 → 昇順表示）
+  // メッセージ購読（最新50件）＋ olderRef のマージで全体を表示
   useEffect(() => {
     if (!threadId) return
     const messagesRef = collection(db, 'threads', threadId, 'messages')
-    const q = query(messagesRef, orderBy('createdAt', 'desc'), limit(50))
+    const q = query(messagesRef, orderBy('createdAt', 'desc'), limit(PAGE))
     const unsub = onSnapshot(q, (snap) => {
-      const newestFirst = snap.docs.map((d) => {
+      const docs = snap.docs
+      const newestFirst = docs.map((d) => {
         const data: any = d.data()
         const t = data?.createdAt?.toDate?.() as Date | undefined
         return {
@@ -199,11 +213,19 @@ export default function ThreadRoomPage() {
             : '',
         } as Message
       })
-      const list = [...newestFirst].reverse()
+      const latestAsc = [...newestFirst].reverse()
+
+      // 初回だけ、以降の古いページ読み込み用カーソルをセット
+      if (!oldestDocRef.current) {
+        oldestDocRef.current = docs[docs.length - 1] ?? null
+        setHasMore(docs.length === PAGE)
+      }
 
       const prevLast = lastMsgIdRef.current
-      const nextLast = list.length ? list[list.length - 1].id : null
-      setMessages(list)
+      const combined = [...olderRef.current, ...latestAsc]
+      const nextLast = combined.length ? combined[combined.length - 1].id : null
+
+      setMessages(combined)
 
       const shouldScroll =
         !prevLast || isNearBottom(messagesBoxRef.current) || prevLast !== nextLast
@@ -245,6 +267,82 @@ export default function ThreadRoomPage() {
       }
     } catch {}
   }, [threadId])
+
+  // さらに古い50件を読み込む
+  const loadOlder = useCallback(async () => {
+    if (loadingMore || !hasMore || !oldestDocRef.current) return
+    setLoadingMore(true)
+
+    const beforeHeight = messagesBoxRef.current?.scrollHeight ?? 0
+
+    try {
+      const baseCol = collection(db, 'threads', threadId, 'messages')
+      const q = query(
+        baseCol,
+        orderBy('createdAt', 'desc'),
+        startAfter(oldestDocRef.current),
+        limit(PAGE)
+      )
+      const snap = await getDocs(q)
+      const docsDesc = snap.docs
+      const olderAsc: Message[] = docsDesc.map((d) => {
+        const data: any = d.data()
+        const t = data?.createdAt?.toDate?.() as Date | undefined
+        return {
+          id: d.id,
+          ...data,
+          createdAtText: t
+            ? t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : '',
+        }
+      }).reverse()
+
+      // 先頭に古いページを追加し、カーソル更新
+      if (olderAsc.length) {
+        olderRef.current = [...olderAsc, ...olderRef.current]
+        setMessages((prev) => [...olderAsc, ...prev])
+        oldestDocRef.current = docsDesc[docsDesc.length - 1] ?? oldestDocRef.current
+      }
+      if (docsDesc.length < PAGE) setHasMore(false)
+    } catch (e) {
+      console.error('loadOlder error', e)
+    } finally {
+      setLoadingMore(false)
+      // スクロール位置補正（ページが跳ねないよう維持）
+      requestAnimationFrame(() => {
+        const afterHeight = messagesBoxRef.current?.scrollHeight ?? 0
+        const box = messagesBoxRef.current
+        if (box) box.scrollTop = (afterHeight - beforeHeight) + box.scrollTop
+      })
+    }
+  }, [threadId, loadingMore, hasMore])
+
+  // 上端セントリネルで古いページを追加ロード
+  useEffect(() => {
+    const root = messagesBoxRef.current
+    const el = topSentinelRef.current
+    if (!root || !el) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          if (e.isIntersecting) void loadOlder()
+        })
+      },
+      { root, rootMargin: '200px 0px 0px 0px', threshold: 0 }
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [loadOlder])
+
+  // 下端ジャンプボタンの表示制御（下端付近なら隠す）
+  useEffect(() => {
+    const el = messagesBoxRef.current
+    if (!el) return
+    const onScroll = () => setShowJumpToBottom(!isNearBottom(el, 120))
+    onScroll() // 初期判定
+    el.addEventListener('scroll', onScroll)
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
 
   async function send() {
     const content = input.trim()
@@ -309,6 +407,10 @@ export default function ThreadRoomPage() {
     }
   }
 
+  const jumpToBottom = useCallback(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [])
+
   return (
     <div className="mx-auto min-h-screen w-full max-w-xl bg-white text-black border-x border-neutral-200">
       {/* Header */}
@@ -366,6 +468,11 @@ export default function ThreadRoomPage() {
         className="px-5 pt-[88px] pb-[120px] overflow-y-auto"
         style={{ height: 'calc(100vh - 64px)' }}
       >
+        {/* 上端セントリネル：見えたらさらに古い50件を読み込む */}
+        <div ref={topSentinelRef} className="h-px" />
+        {loadingMore && (
+          <div className="py-2 text-center text-xs text-neutral-500">読み込み中…</div>
+        )}
         {messages.map((m) => {
           const isSelf = m.userId === auth.currentUser?.uid
           return (
@@ -397,6 +504,20 @@ export default function ThreadRoomPage() {
         })}
         <div ref={bottomRef} />
       </main>
+
+      {showJumpToBottom && (
+        <button
+          type="button"
+          onClick={jumpToBottom}
+          className="fixed left-1/2 -translate-x-1/2 bottom-36 z-40 grid h-11 w-11 place-items-center rounded-full border border-neutral-200 bg-white text-pink-600 shadow-lg hover:bg-pink-50 focus:outline-none"
+          aria-label="最新までスクロール"
+          title="最新までスクロール"
+        >
+          <svg viewBox="0 0 24 24" className="h-5 w-5 fill-current" aria-hidden="true">
+            <path d="M12 4v12M6 10l6 6 6-6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
+      )}
 
       {/* Chat input (fixed bottom, centered) */}
       <div className="fixed bottom-0 left-1/2 z-30 w-full max-w-xl -translate-x-1/2 bg-white px-5 py-4 border-t border-neutral-200">
