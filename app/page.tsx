@@ -117,7 +117,7 @@ export default function HomePage() {
       <header className="sticky top-0 z-10 border-b border-neutral-200 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60">
         <div className="flex items-center justify-between px-4 py-4">
           <h1 className="bg-gradient-to-br from-pink-500 to-rose-400 bg-clip-text text-2xl font-extrabold text-transparent">
-            OZZ
+            OZZ <span className="sr-only">（オズ）掲示板</span>
           </h1>
           <div className="flex items-center gap-2 text-neutral-500">
             <button className="rounded-xl p-2 transition hover:bg-neutral-100" aria-label="検索">🔍</button>
@@ -125,6 +125,32 @@ export default function HomePage() {
           </div>
         </div>
       </header>
+
+      {/* JSON-LD: WebSite & Organization（ブランド検索強化） */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            "@context": "https://schema.org",
+            "@type": "WebSite",
+            name: "OZZ",
+            alternateName: ["オズ 掲示板", "OZZ 掲示板"],
+            url: "https://o-zz.net"
+          })
+        }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            "@context": "https://schema.org",
+            "@type": "Organization",
+            name: "OZZ",
+            url: "https://o-zz.net",
+            logo: "https://o-zz.net/icon.png"
+          })
+        }}
+      />
 
       <main className="px-4 pb-28 pt-4">
         {/* お知らせ */}
